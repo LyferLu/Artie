@@ -7,6 +7,7 @@ import {
   AdjustMaskOperate,
   CV2Flag,
   ExtenderDirection,
+  ImageInfo,
   LDMSampler,
   Line,
   LineGroup,
@@ -14,10 +15,13 @@ import {
   PluginParams,
   Point,
   PowerPaintTask,
+  ProjectInfo,
   ServerConfig,
   Size,
   SortBy,
   SortOrder,
+  UserInfo,
+  WorkspaceTab,
 } from "./types"
 import {
   BRUSH_COLOR,
@@ -35,7 +39,22 @@ import {
   loadImage,
   srcToFile,
 } from "./utils"
-import inpaint, { getGenInfo, postAdjustMask, runPlugin } from "./api"
+import inpaint, {
+  authLogin,
+  authMe,
+  authRegister,
+  createProject,
+  deleteImage,
+  deleteProject,
+  getGenInfo,
+  getImages,
+  getProjects,
+  postAdjustMask,
+  runPlugin,
+  setAuthToken,
+  switchTab,
+  txt2img,
+} from "./api"
 import { toast } from "@/components/ui/use-toast"
 
 type FileManagerState = {
@@ -111,6 +130,10 @@ export type Settings = {
 
   // AdjustMask
   adjustMaskKernelSize: number
+
+  // Txt2Img resolution
+  txt2imgWidth: number
+  txt2imgHeight: number
 }
 
 type InteractiveSegState = {
@@ -161,6 +184,24 @@ type AppState = {
   serverConfig: ServerConfig
 
   settings: Settings
+
+  activeTab: WorkspaceTab
+  generatedImages: Array<{ url: string; seed: string }>
+  isGenerating: boolean
+  // Used to hand off a generated image to a plugin tab (SuperRes, RemoveBG, etc.)
+  pendingFile: { file: File; url: string } | null
+
+  // Auth state
+  user: UserInfo | null
+  token: string | null
+  isAuthenticated: boolean
+
+  // User data
+  projects: ProjectInfo[]
+  currentProject: ProjectInfo | null
+  projectImages: ImageInfo[]
+  isLoadingProjects: boolean
+  isLoadingImages: boolean
 }
 
 type AppAction = {
@@ -234,6 +275,26 @@ type AppAction = {
 
   adjustMask: (operate: AdjustMaskOperate) => Promise<void>
   clearMask: () => void
+
+  setActiveTab: (tab: WorkspaceTab) => void
+  runTxt2Img: () => Promise<void>
+  clearGeneratedImages: () => void
+  sendToTab: (blobUrl: string, tab: WorkspaceTab) => Promise<void>
+  consumePendingFile: () => { file: File; url: string } | null
+
+  // Auth actions
+  login: (username: string, password: string) => Promise<void>
+  register: (username: string, email: string, password: string) => Promise<void>
+  logout: () => void
+  restoreSession: () => Promise<void>
+
+  // User data actions
+  fetchProjects: () => Promise<void>
+  createUserProject: (name: string, description?: string) => Promise<void>
+  deleteUserProject: (id: string) => Promise<void>
+  setCurrentProject: (project: ProjectInfo | null) => void
+  fetchProjectImages: (projectId?: string, imageType?: string) => Promise<void>
+  deleteUserImage: (id: string) => Promise<void>
 }
 
 const defaultValues: AppState = {
@@ -310,6 +371,7 @@ const defaultValues: AppState = {
     disableModelSwitch: false,
     isDesktop: false,
     samplers: ["DPM++ 2M SDE Karras"],
+    enableAuth: true,
   },
   settings: {
     model: {
@@ -324,6 +386,7 @@ const defaultValues: AppState = {
       controlnets: [],
       brushnets: [],
       support_lcm_lora: false,
+      support_txt2img: false,
       is_single_file_diffusers: false,
       need_prompt: false,
     },
@@ -361,7 +424,24 @@ const defaultValues: AppState = {
     enablePowerPaintV2: false,
     powerpaintTask: PowerPaintTask.text_guided,
     adjustMaskKernelSize: 12,
+    txt2imgWidth: 512,
+    txt2imgHeight: 512,
   },
+
+  activeTab: WorkspaceTab.INPAINT,
+  generatedImages: [],
+  isGenerating: false,
+  pendingFile: null,
+
+  user: null,
+  token: null,
+  isAuthenticated: false,
+
+  projects: [],
+  currentProject: null,
+  projectImages: [],
+  isLoadingProjects: false,
+  isLoadingImages: false,
 }
 
 export const useStore = createWithEqualityFn<AppState & AppAction>()(
@@ -1142,14 +1222,227 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.editorState.curLineGroup = []
         })
       },
+
+      setActiveTab: (tab: WorkspaceTab) => {
+        set((state) => {
+          state.activeTab = tab
+        })
+        // 切到需要特定模型的 tab 时，后台自动切模型
+        const MODEL_TABS = [WorkspaceTab.GENERATE, WorkspaceTab.INPAINT, WorkspaceTab.OUTPAINT]
+        if (MODEL_TABS.includes(tab)) {
+          switchTab(tab).then((newModel) => {
+            set((state) => {
+              state.settings.model = castDraft(newModel)
+            })
+          }).catch(console.error)
+        }
+      },
+
+      clearGeneratedImages: () => {
+        set((state) => {
+          state.generatedImages = []
+        })
+      },
+
+      sendToTab: async (blobUrl: string, tab: WorkspaceTab) => {
+        try {
+          const res = await fetch(blobUrl)
+          const blob = await res.blob()
+          const file = new File([blob], "generated.png", { type: "image/png" })
+          const url = URL.createObjectURL(file)
+          set((state) => {
+            state.pendingFile = castDraft({ file, url })
+            state.activeTab = tab
+          })
+        } catch (e) {
+          console.error("sendToTab failed:", e)
+        }
+      },
+
+      consumePendingFile: () => {
+        const pending = get().pendingFile
+        if (pending) {
+          set((state) => {
+            state.pendingFile = null
+          })
+        }
+        return pending
+      },
+
+      runTxt2Img: async () => {
+        const { settings } = get()
+        if (!settings.model.support_txt2img) return
+
+        set((state) => {
+          state.isGenerating = true
+        })
+
+        try {
+          const result = await txt2img({
+            prompt: settings.prompt,
+            negativePrompt: settings.negativePrompt,
+            width: settings.txt2imgWidth,
+            height: settings.txt2imgHeight,
+            steps: settings.sdSteps,
+            guidanceScale: settings.sdGuidanceScale,
+            sampler: settings.sdSampler,
+            seed: settings.seed,
+            seedFixed: settings.seedFixed,
+            enableLCMLora: settings.enableLCMLora,
+          })
+          if (result) {
+            set((state) => {
+              state.generatedImages.unshift({
+                url: result.blob,
+                seed: result.seed ?? "0",
+              })
+            })
+          }
+        } catch (e: any) {
+          toast({
+            variant: "destructive",
+            title: "Generation failed",
+            description: e.message ? e.message : e.toString(),
+          })
+        } finally {
+          set((state) => {
+            state.isGenerating = false
+          })
+        }
+      },
+      // ------------------------------------------------------------------
+      // Auth actions
+      // ------------------------------------------------------------------
+
+      login: async (username: string, password: string) => {
+        const data = await authLogin(username, password)
+        setAuthToken(data.access_token)
+        const user = await authMe()
+        set((state) => {
+          state.token = data.access_token
+          state.user = user
+          state.isAuthenticated = true
+        })
+      },
+
+      register: async (username: string, email: string, password: string) => {
+        await authRegister(username, email, password)
+        // Auto-login after registration
+        await get().login(username, password)
+      },
+
+      logout: () => {
+        setAuthToken(null)
+        set((state) => {
+          state.token = null
+          state.user = null
+          state.isAuthenticated = false
+          state.projects = []
+          state.currentProject = null
+          state.projectImages = []
+        })
+      },
+
+      restoreSession: async () => {
+        const token = get().token
+        if (!token) return
+        try {
+          setAuthToken(token)
+          const user = await authMe()
+          set((state) => {
+            state.user = user
+            state.isAuthenticated = true
+          })
+        } catch {
+          get().logout()
+        }
+      },
+
+      // ------------------------------------------------------------------
+      // User data actions
+      // ------------------------------------------------------------------
+
+      fetchProjects: async () => {
+        if (!get().isAuthenticated) return
+        set((state) => { state.isLoadingProjects = true })
+        try {
+          const projects = await getProjects()
+          set((state) => { state.projects = projects })
+        } catch {
+          // silently ignore
+        } finally {
+          set((state) => { state.isLoadingProjects = false })
+        }
+      },
+
+      createUserProject: async (name: string, description = "") => {
+        const project = await createProject(name, description)
+        set((state) => {
+          state.projects.unshift(project)
+        })
+      },
+
+      deleteUserProject: async (id: string) => {
+        await deleteProject(id)
+        set((state) => {
+          state.projects = state.projects.filter((p) => p.id !== id)
+          if (state.currentProject?.id === id) {
+            state.currentProject = null
+            state.projectImages = []
+          }
+        })
+      },
+
+      setCurrentProject: (project: ProjectInfo | null) => {
+        set((state) => { state.currentProject = project })
+        if (project) {
+          get().fetchProjectImages(project.id)
+        }
+      },
+
+      fetchProjectImages: async (projectId?: string, imageType?: string) => {
+        if (!get().isAuthenticated) return
+        set((state) => { state.isLoadingImages = true })
+        try {
+          const images = await getImages(projectId, imageType)
+          set((state) => { state.projectImages = images })
+        } catch {
+          // silently ignore
+        } finally {
+          set((state) => { state.isLoadingImages = false })
+        }
+      },
+
+      deleteUserImage: async (id: string) => {
+        await deleteImage(id)
+        set((state) => {
+          state.projectImages = state.projectImages.filter((img) => img.id !== id)
+        })
+      },
     })),
     {
-      name: "ZUSTAND_STATE", // name of the item in the storage (must be unique)
-      version: 2,
+      name: "ZUSTAND_STATE",
+      version: 4,
+      migrate: (persistedState: any, version: number) => {
+        if (version < 4) {
+          // Add txt2imgWidth/txt2imgHeight defaults if missing
+          if (persistedState.settings) {
+            if (persistedState.settings.txt2imgWidth === undefined) {
+              persistedState.settings.txt2imgWidth = 512
+            }
+            if (persistedState.settings.txt2imgHeight === undefined) {
+              persistedState.settings.txt2imgHeight = 512
+            }
+          }
+          // Remove legacy workspaceMode
+          delete persistedState.workspaceMode
+        }
+        return persistedState
+      },
       partialize: (state) =>
         Object.fromEntries(
           Object.entries(state).filter(([key]) =>
-            ["fileManagerState", "settings"].includes(key)
+            ["fileManagerState", "settings", "token", "activeTab"].includes(key)
           )
         ),
     }

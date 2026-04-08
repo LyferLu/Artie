@@ -28,6 +28,7 @@ export interface ServerConfig {
   disableModelSwitch: boolean
   isDesktop: boolean
   samplers: string[]
+  enableAuth: boolean
 }
 
 export interface GenInfo {
@@ -53,6 +54,7 @@ export interface ModelInfo {
   controlnets: string[]
   brushnets: string[]
   support_lcm_lora: boolean
+  support_txt2img: boolean
   need_prompt: boolean
   is_single_file_diffusers: boolean
 }
@@ -130,3 +132,44 @@ export enum PowerPaintTask {
 }
 
 export type AdjustMaskOperate = "expand" | "shrink" | "reverse"
+
+export enum WorkspaceTab {
+  GENERATE = "generate",
+  INPAINT = "inpaint",
+  OUTPAINT = "outpaint",
+  REMOVE_BG = "remove_bg",
+  SUPER_RES = "super_res",
+  FACE_RESTORE = "face_restore",
+  INTERACTIVE_SEG = "interactive_seg",
+  MY_WORKSPACE = "my_workspace",
+}
+
+export interface UserInfo {
+  id: string
+  username: string
+  email: string
+  created_at: string
+}
+
+export interface ProjectInfo {
+  id: string
+  name: string
+  description?: string
+  image_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ImageInfo {
+  id: string
+  filename: string
+  image_type: string
+  prompt?: string
+  negative_prompt?: string
+  seed?: number
+  model_name?: string
+  width?: number
+  height?: number
+  project_id?: string
+  created_at: string
+}

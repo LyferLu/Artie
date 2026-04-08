@@ -1,10 +1,13 @@
 import {
   Filename,
   GenInfo,
+  ImageInfo,
   ModelInfo,
   PowerPaintTask,
+  ProjectInfo,
   Rect,
   ServerConfig,
+  UserInfo,
 } from "@/lib/types"
 import { Settings } from "@/lib/states"
 import { convertToBase64, srcToFile } from "@/lib/utils"
@@ -13,6 +16,21 @@ import axios from "axios"
 export const API_ENDPOINT = import.meta.env.DEV
   ? import.meta.env.VITE_BACKEND + "/api/v1"
   : "/api/v1"
+
+let _authToken: string | null = null
+
+export function setAuthToken(token: string | null) {
+  _authToken = token
+  if (token) {
+    api.defaults.headers.common["Authorization"] = `Bearer ${token}`
+  } else {
+    delete api.defaults.headers.common["Authorization"]
+  }
+}
+
+export function getAuthToken(): string | null {
+  return _authToken
+}
 
 const api = axios.create({
   baseURL: API_ENDPOINT,
@@ -109,6 +127,11 @@ export async function getServerConfig(): Promise<ServerConfig> {
 
 export async function switchModel(name: string): Promise<ModelInfo> {
   const res = await api.post(`/model`, { name })
+  return res.data
+}
+
+export async function switchTab(tab: string): Promise<ModelInfo> {
+  const res = await api.post(`/switch-tab`, { tab })
   return res.data
 }
 
@@ -226,6 +249,47 @@ export async function getSamplers(): Promise<string[]> {
   return res.data
 }
 
+export interface Txt2ImgParams {
+  prompt: string
+  negativePrompt: string
+  width: number
+  height: number
+  steps: number
+  guidanceScale: number
+  sampler: string
+  seed: number
+  seedFixed: boolean
+  enableLCMLora: boolean
+}
+
+export async function txt2img(params: Txt2ImgParams) {
+  const res = await fetch(`${API_ENDPOINT}/txt2img`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      prompt: params.prompt,
+      negative_prompt: params.negativePrompt,
+      width: params.width,
+      height: params.height,
+      sd_steps: params.steps,
+      sd_guidance_scale: params.guidanceScale,
+      sd_sampler: params.sampler,
+      sd_seed: params.seedFixed ? params.seed : -1,
+      sd_lcm_lora: params.enableLCMLora,
+    }),
+  })
+  if (res.ok) {
+    const blob = await res.blob()
+    return {
+      blob: URL.createObjectURL(blob),
+      seed: res.headers.get("X-Seed"),
+    }
+  }
+  throw await throwErrors(res)
+}
+
 export async function postAdjustMask(
   mask: File | Blob,
   operate: "expand" | "shrink" | "reverse",
@@ -248,4 +312,83 @@ export async function postAdjustMask(
     return blob
   }
   throw await throwErrors(res)
+}
+
+// ---------------------------------------------------------------------------
+// Auth API
+// ---------------------------------------------------------------------------
+
+export async function authRegister(
+  username: string,
+  email: string,
+  password: string
+): Promise<UserInfo> {
+  const res = await api.post("/auth/register", { username, email, password })
+  return res.data
+}
+
+export async function authLogin(
+  username: string,
+  password: string
+): Promise<{ access_token: string; token_type: string }> {
+  const res = await api.post("/auth/login", { username, password })
+  return res.data
+}
+
+export async function authMe(): Promise<UserInfo> {
+  const res = await api.get("/auth/me")
+  return res.data
+}
+
+export async function getVramStatus() {
+  const res = await api.get("/vram-status")
+  return res.data
+}
+
+// ---------------------------------------------------------------------------
+// Project API
+// ---------------------------------------------------------------------------
+
+export async function getProjects(): Promise<ProjectInfo[]> {
+  const res = await api.get("/projects")
+  return res.data
+}
+
+export async function createProject(
+  name: string,
+  description: string = ""
+): Promise<ProjectInfo> {
+  const res = await api.post("/projects", { name, description })
+  return res.data
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await api.delete(`/projects/${projectId}`)
+}
+
+// ---------------------------------------------------------------------------
+// Image API
+// ---------------------------------------------------------------------------
+
+export async function getImages(
+  projectId?: string,
+  imageType?: string,
+  skip = 0,
+  limit = 50
+): Promise<ImageInfo[]> {
+  const params: Record<string, any> = { skip, limit }
+  if (projectId) params.project_id = projectId
+  if (imageType) params.image_type = imageType
+  const res = await api.get("/images", { params })
+  return res.data
+}
+
+export function getImageFileUrl(imageId: string): string {
+  const token = getAuthToken()
+  const base = `${API_ENDPOINT}/images/${imageId}/file`
+  return token ? `${base}?token=${token}` : base
+}
+
+export async function deleteImage(imageId: string): Promise<void> {
+  await api.delete(`/images/${imageId}`)
 }

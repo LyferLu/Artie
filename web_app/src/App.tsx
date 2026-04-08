@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useRef } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import useInputImage from "@/hooks/useInputImage"
 import { keepGUIAlive } from "@/lib/utils"
 import { getServerConfig } from "@/lib/api"
 import Header from "@/components/Header"
-import Workspace from "@/components/Workspace"
+import MainLayout from "@/components/MainLayout"
 import FileSelect from "@/components/FileSelect"
+import AuthPage from "@/components/AuthPage"
 import { Toaster } from "./components/ui/toaster"
 import { useStore } from "./lib/states"
 import { useWindowSize } from "react-use"
+import { Loader2 } from "lucide-react"
 
 const SUPPORTED_FILE_TYPE = [
   "image/jpeg",
@@ -17,16 +19,15 @@ const SUPPORTED_FILE_TYPE = [
   "image/bmp",
   "image/tiff",
 ]
+
 function Home() {
-  const [file, updateAppState, setServerConfig, setFile] = useStore((state) => [
+  const [file, updateAppState, setFile] = useStore((state) => [
     state.file,
     state.updateAppState,
-    state.setServerConfig,
     state.setFile,
   ])
 
   const userInputImage = useInputImage()
-
   const windowSize = useWindowSize()
 
   useEffect(() => {
@@ -38,18 +39,6 @@ function Home() {
   useEffect(() => {
     updateAppState({ windowSize })
   }, [windowSize])
-
-  useEffect(() => {
-    const fetchServerConfig = async () => {
-      const serverConfig = await getServerConfig()
-      setServerConfig(serverConfig)
-      if (serverConfig.isDesktop) {
-        // Keeping GUI Window Open
-        keepGUIAlive()
-      }
-    }
-    fetchServerConfig()
-  }, [])
 
   const dragCounter = useRef(0)
 
@@ -75,25 +64,10 @@ function Home() {
     event.preventDefault()
     event.stopPropagation()
     if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
-      if (event.dataTransfer.files.length > 1) {
-        // setToastState({
-        //   open: true,
-        //   desc: "Please drag and drop only one file",
-        //   state: "error",
-        //   duration: 3000,
-        // })
-      } else {
+      if (event.dataTransfer.files.length === 1) {
         const dragFile = event.dataTransfer.files[0]
-        const fileType = dragFile.type
-        if (SUPPORTED_FILE_TYPE.includes(fileType)) {
+        if (SUPPORTED_FILE_TYPE.includes(dragFile.type)) {
           setFile(dragFile)
-        } else {
-          // setToastState({
-          //   open: true,
-          //   desc: "Please drag and drop an image file",
-          //   state: "error",
-          //   duration: 3000,
-          // })
         }
       }
       event.dataTransfer.clearData()
@@ -101,34 +75,17 @@ function Home() {
   }, [])
 
   const onPaste = useCallback((event: any) => {
-    // TODO: when sd side panel open, ctrl+v not work
-    // https://htmldom.dev/paste-an-image-from-the-clipboard/
-    if (!event.clipboardData) {
-      return
-    }
-    const clipboardItems = event.clipboardData.items
+    if (!event.clipboardData) return
     const items: DataTransferItem[] = [].slice
-      .call(clipboardItems)
-      .filter((item: DataTransferItem) => {
-        // Filter the image items only
-        return item.type.indexOf("image") !== -1
-      })
+      .call(event.clipboardData.items)
+      .filter((item: DataTransferItem) => item.type.indexOf("image") !== -1)
 
-    if (items.length === 0) {
-      return
-    }
-
+    if (items.length === 0) return
     event.preventDefault()
     event.stopPropagation()
 
-    // TODO: add confirm dialog
-
-    const item = items[0]
-    // Get the blob of image
-    const blob = item.getAsFile()
-    if (blob) {
-      setFile(blob)
-    }
+    const blob = items[0].getAsFile()
+    if (blob) setFile(blob)
   }, [])
 
   useEffect(() => {
@@ -137,7 +94,7 @@ function Home() {
     window.addEventListener("dragover", handleDrag)
     window.addEventListener("drop", handleDrop)
     window.addEventListener("paste", onPaste)
-    return function cleanUp() {
+    return () => {
       window.removeEventListener("dragenter", handleDragIn)
       window.removeEventListener("dragleave", handleDragOut)
       window.removeEventListener("dragover", handleDrag)
@@ -150,7 +107,7 @@ function Home() {
     <main className="flex min-h-screen flex-col items-center justify-between w-full bg-[radial-gradient(circle_at_1px_1px,_#8e8e8e8e_1px,_transparent_0)] [background-size:20px_20px] bg-repeat">
       <Toaster />
       <Header />
-      <Workspace />
+      <MainLayout />
       {!file ? (
         <FileSelect
           onSelection={async (f) => {
@@ -164,4 +121,47 @@ function Home() {
   )
 }
 
-export default Home
+export default function App() {
+  const [isInitialized, setIsInitialized] = useState(false)
+  const [serverConfig, setServerConfig, isAuthenticated, restoreSession] = useStore(
+    (state) => [state.serverConfig, state.setServerConfig, state.isAuthenticated, state.restoreSession]
+  )
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const config = await getServerConfig()
+        setServerConfig(config)
+        if (config.isDesktop) keepGUIAlive()
+      } catch {
+        // server unreachable, continue anyway
+      }
+      await restoreSession()
+      setIsInitialized(true)
+    }
+    init()
+  }, [])
+
+  if (!isInitialized) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Toaster />
+        <div className="flex flex-col items-center gap-3 text-muted-foreground">
+          <Loader2 className="h-8 w-8 animate-spin" />
+          <span className="text-sm">正在初始化…</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (serverConfig.enableAuth && !isAuthenticated) {
+    return (
+      <>
+        <Toaster />
+        <AuthPage />
+      </>
+    )
+  }
+
+  return <Home />
+}

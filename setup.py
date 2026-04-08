@@ -1,8 +1,8 @@
 import setuptools
 from pathlib import Path
 
-package_files = Path("iopaint/web_app").glob("**/*")
-package_files = [str(it).replace("iopaint/", "") for it in package_files]
+package_files = Path("artie/web_app").glob("**/*")
+package_files = [str(it).replace("artie/", "") for it in package_files]
 package_files += ["model/anytext/ocr_recog/ppocr_keys_v1.txt"]
 package_files += ["model/anytext/anytext_sd15.yaml"]
 package_files += ["model/original_sd_configs/sd_xl_base.yaml"]
@@ -27,7 +27,7 @@ def load_requirements():
 
 # https://setuptools.readthedocs.io/en/latest/setuptools.html#including-data-files
 setuptools.setup(
-    name="IOPaint",
+    name="Artie",
     version="1.6.0",
     author="PanicByte",
     author_email="cwq1913@gmail.com",
@@ -36,10 +36,10 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/Sanster/IOPaint",
     packages=setuptools.find_packages("."),
-    package_data={"iopaint": package_files},
+    package_data={"artie": package_files},
     install_requires=load_requirements(),
     python_requires=">=3.7",
-    entry_points={"console_scripts": ["iopaint=iopaint:entry_point"]},
+    entry_points={"console_scripts": ["artie=artie:entry_point"]},
     classifiers=[
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: OS Independent",

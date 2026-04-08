@@ -9,9 +9,10 @@ export const API_ENDPOINT = import.meta.env.DEV
 const socket = io(API_ENDPOINT)
 
 const DiffusionProgress = () => {
-  const [settings, isInpainting, isSD] = useStore((state) => [
+  const [settings, isInpainting, isGenerating, isSD] = useStore((state) => [
     state.settings,
     state.isInpainting,
+    state.isGenerating,
     state.isSD(),
   ])
 
@@ -51,7 +52,7 @@ const DiffusionProgress = () => {
     <div
       className="z-10 fixed bg-background w-[220px] left-1/2 -translate-x-1/2 top-[68px] h-[32px] flex justify-center items-center gap-[18px] border-[1px] border-[solid] rounded-[14px] pl-[8px] pr-[8px]"
       style={{
-        visibility: isConnected && isInpainting && isSD ? "visible" : "hidden",
+        visibility: isConnected && (isInpainting || isGenerating) && isSD ? "visible" : "hidden",
       }}
     >
       <Progress value={progress} />

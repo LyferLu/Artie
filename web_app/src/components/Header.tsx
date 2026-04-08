@@ -5,8 +5,7 @@ import Shortcuts from "@/components/Shortcuts"
 import { useImage } from "@/hooks/useImage"
 
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover"
-import PromptInput from "./PromptInput"
-import { RotateCw, Image, Upload } from "lucide-react"
+import { RotateCw, Image, Upload, LogOut, User } from "lucide-react"
 import FileManager, { MASK_TAB } from "./FileManager"
 import { getMediaBlob, getMediaFile } from "@/lib/api"
 import { useStore } from "@/lib/states"
@@ -24,6 +23,8 @@ const Header = () => {
     runMannually,
     enableUploadMask,
     model,
+    user,
+    isAuthenticated,
     setFile,
     setCustomFile,
     runInpainting,
@@ -32,6 +33,7 @@ const Header = () => {
     imageHeight,
     imageWidth,
     handleFileManagerMaskSelect,
+    logout,
   ] = useStore((state) => [
     state.file,
     state.customMask,
@@ -40,6 +42,8 @@ const Header = () => {
     state.runMannually(),
     state.settings.enableUploadMask,
     state.settings.model,
+    state.user,
+    state.isAuthenticated,
     state.setFile,
     state.setCustomFile,
     state.runInpainting,
@@ -48,6 +52,7 @@ const Header = () => {
     state.imageHeight,
     state.imageWidth,
     state.handleFileManagerMaskSelect,
+    state.logout,
   ])
 
   const { toast } = useToast()
@@ -95,7 +100,7 @@ const Header = () => {
 
         <ImageUploadButton
           disabled={isInpainting}
-          tooltip="Upload image"
+          tooltip="上传图片"
           onFileUpload={(file) => {
             setFile(file)
           }}
@@ -111,7 +116,7 @@ const Header = () => {
         >
           <ImageUploadButton
             disabled={isInpainting}
-            tooltip="Upload custom mask"
+            tooltip="上传自定义遮罩"
             onFileUpload={async (file) => {
               let newCustomMask: HTMLImageElement | null = null
               try {
@@ -158,7 +163,7 @@ const Header = () => {
                   }
                 }}
               >
-                <IconButton tooltip="Run custom mask">
+                <IconButton tooltip="运行自定义遮罩">
                   <PlayIcon />
                 </IconButton>
               </PopoverTrigger>
@@ -178,7 +183,7 @@ const Header = () => {
         {file && !model.need_prompt ? (
           <IconButton
             disabled={isInpainting}
-            tooltip="Rerun previous mask"
+            tooltip="重新运行上次遮罩"
             onClick={handleRerunLastMask}
             onMouseEnter={onRerunMouseEnter}
             onMouseLeave={onRerunMouseLeave}
@@ -190,12 +195,30 @@ const Header = () => {
         )}
       </div>
 
-      {model.need_prompt ? <PromptInput /> : <></>}
-
-      <div className="flex gap-1">
+      {/* Right side: user info + settings */}
+      <div className="flex gap-1 items-center">
         <Coffee />
         <Shortcuts />
         {serverConfig.disableModelSwitch ? <></> : <SettingsDialog />}
+        {isAuthenticated && user && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="flex items-center gap-1.5 px-2 py-1 rounded-md text-sm hover:bg-accent transition-colors">
+                <User className="h-4 w-4" />
+                <span className="max-w-[80px] truncate">{user.username}</span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-40 p-1" align="end">
+              <button
+                className="flex w-full items-center gap-2 px-2 py-1.5 rounded-sm text-sm hover:bg-accent transition-colors"
+                onClick={logout}
+              >
+                <LogOut className="h-4 w-4" />
+                退出登录
+              </button>
+            </PopoverContent>
+          </Popover>
+        )}
       </div>
     </header>
   )

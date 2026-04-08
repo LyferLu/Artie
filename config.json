@@ -1,0 +1,22 @@
+{
+    "host": "127.0.0.1",
+    "port": 8080,
+    "inbrowser": true,
+    "no_half": false,
+    "low_mem": false,
+    "cpu_offload": false,
+    "disable_nsfw_checker": false,
+    "local_files_only": false,
+    "cpu_textencoder": false,
+    "device": "cuda",
+    "input": null,
+    "mask_dir": null,
+    "output_dir": null,
+    "quality": 95,
+    "max_cached_models": 3,
+    "max_vram_usage_gb": null,
+    "disable_auth": false,
+    "auth_secret_key": "CHANGE_ME_IN_PRODUCTION",
+    "db_path": null,
+    "model_dir": "C:\\Users\\Lyfer_Lu\\.cache"
+}

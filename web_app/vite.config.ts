@@ -9,4 +9,8 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    outDir: path.resolve(__dirname, "../artie/web_app"),
+    emptyOutDir: true,
+  },
 })
