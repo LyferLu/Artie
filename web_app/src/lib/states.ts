@@ -188,8 +188,8 @@ type AppState = {
   activeTab: WorkspaceTab
   generatedImages: Array<{ url: string; seed: string }>
   isGenerating: boolean
-  // Used to hand off a generated image to a plugin tab (SuperRes, RemoveBG, etc.)
-  pendingFile: { file: File; url: string } | null
+  // 全局工作图片，所有标签页共享
+  workingImage: { file: File; url: string } | null
 
   // Auth state
   user: UserInfo | null
@@ -280,7 +280,7 @@ type AppAction = {
   runTxt2Img: () => Promise<void>
   clearGeneratedImages: () => void
   sendToTab: (blobUrl: string, tab: WorkspaceTab) => Promise<void>
-  consumePendingFile: () => { file: File; url: string } | null
+  setWorkingImage: (file: File) => void
 
   // Auth actions
   login: (username: string, password: string) => Promise<void>
@@ -431,7 +431,7 @@ const defaultValues: AppState = {
   activeTab: WorkspaceTab.INPAINT,
   generatedImages: [],
   isGenerating: false,
-  pendingFile: null,
+  workingImage: null,
 
   user: null,
   token: null,
@@ -1224,10 +1224,41 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
       },
 
       setActiveTab: (tab: WorkspaceTab) => {
-        set((state) => {
-          state.activeTab = tab
-        })
-        // 切到需要特定模型的 tab 时，后台自动切模型
+        const prevTab = get().activeTab
+        const EDITOR_TABS = [WorkspaceTab.INPAINT, WorkspaceTab.OUTPAINT, WorkspaceTab.INTERACTIVE_SEG]
+
+        // 离开画布标签页时，快照最新编辑结果到 workingImage
+        if (EDITOR_TABS.includes(prevTab)) {
+          const renders = get().editorState.renders
+          if (renders.length > 0) {
+            const lastRender = renders[renders.length - 1]
+            srcToFile(lastRender.currentSrc, "canvas.png", "image/png").then(file => {
+              const url = URL.createObjectURL(file)
+              const old = get().workingImage
+              if (old?.url) URL.revokeObjectURL(old.url)
+              set(state => { state.workingImage = castDraft({ file, url }) })
+            }).catch(console.error)
+          } else if (get().file) {
+            // 没有编辑过，用原始 file 更新 workingImage
+            const f = get().file!
+            const url = URL.createObjectURL(f)
+            const old = get().workingImage
+            if (old?.url) URL.revokeObjectURL(old.url)
+            set(state => { state.workingImage = castDraft({ file: f, url }) })
+          }
+        }
+
+        set(state => { state.activeTab = tab })
+
+        // 进入画布标签页时，如果 workingImage 存在且 file 为空，自动加载
+        if (EDITOR_TABS.includes(tab)) {
+          const wi = get().workingImage
+          if (wi && !get().file) {
+            get().setFile(wi.file)
+          }
+        }
+
+        // 保留原有的模型切换逻辑
         const MODEL_TABS = [WorkspaceTab.GENERATE, WorkspaceTab.INPAINT, WorkspaceTab.OUTPAINT]
         if (MODEL_TABS.includes(tab)) {
           switchTab(tab).then((newModel) => {
@@ -1250,23 +1281,24 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           const blob = await res.blob()
           const file = new File([blob], "generated.png", { type: "image/png" })
           const url = URL.createObjectURL(file)
+          const old = get().workingImage
+          if (old?.url) URL.revokeObjectURL(old.url)
           set((state) => {
-            state.pendingFile = castDraft({ file, url })
-            state.activeTab = tab
+            state.workingImage = castDraft({ file, url })
           })
+          get().setActiveTab(tab)  // 使用 setActiveTab 而非直接设置，确保模型切换等逻辑执行
         } catch (e) {
           console.error("sendToTab failed:", e)
         }
       },
 
-      consumePendingFile: () => {
-        const pending = get().pendingFile
-        if (pending) {
-          set((state) => {
-            state.pendingFile = null
-          })
-        }
-        return pending
+      setWorkingImage: (file: File) => {
+        const url = URL.createObjectURL(file)
+        const old = get().workingImage
+        if (old?.url) URL.revokeObjectURL(old.url)
+        set((state) => {
+          state.workingImage = castDraft({ file, url })
+        })
       },
 
       runTxt2Img: async () => {

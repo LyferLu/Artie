@@ -18,7 +18,7 @@ import {
   Smile,
   Download,
 } from "lucide-react"
-import { cn, srcToFile } from "@/lib/utils"
+import { cn } from "@/lib/utils"
 import {
   Select,
   SelectContent,
@@ -49,8 +49,6 @@ const GenerateTab = () => {
     updateSettings,
     runTxt2Img,
     clearGeneratedImages,
-    setActiveTab,
-    setFile,
     sendToTab,
   ] = useStore((state) => [
     state.settings,
@@ -60,8 +58,6 @@ const GenerateTab = () => {
     state.updateSettings,
     state.runTxt2Img,
     state.clearGeneratedImages,
-    state.setActiveTab,
-    state.setFile,
     state.sendToTab,
   ])
 
@@ -111,14 +107,8 @@ const GenerateTab = () => {
     }
   }, [isDisabled, settings.prompt, runTxt2Img])
 
-  const handleEditImage = async (url: string, index: number) => {
-    try {
-      const file = await srcToFile(url, `generated_${index}.png`, "image/png")
-      await setFile(file)
-      setActiveTab(WorkspaceTab.INPAINT)
-    } catch (e) {
-      console.error("Failed to load generated image for editing:", e)
-    }
+  const handleEditImage = async (url: string) => {
+    await sendToTab(url, WorkspaceTab.INPAINT)
   }
 
   const handleSwitchModel = async (name: string) => {
@@ -504,7 +494,7 @@ const GenerateTab = () => {
                       size="sm"
                       variant="secondary"
                       className="gap-1.5 text-xs h-7"
-                      onClick={() => handleEditImage(img.url, idx)}
+                      onClick={() => handleEditImage(img.url)}
                       title="在 AI 擦除画布中打开"
                     >
                       <Edit2 className="h-3 w-3" />

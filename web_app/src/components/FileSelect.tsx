@@ -61,8 +61,8 @@ export default function FileSelect(props: FileSelectProps) {
           />
           <p className="text-center">
             {resolution === "desktop"
-              ? "Click here or drag an image file"
-              : "Tap here to load your picture"}
+              ? "点击此处或拖入图片文件"
+              : "点击此处加载图片"}
           </p>
         </div>
       </label>

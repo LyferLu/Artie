@@ -11,6 +11,7 @@ import { Toaster } from "./components/ui/toaster"
 import { useStore } from "./lib/states"
 import { useWindowSize } from "react-use"
 import { Loader2 } from "lucide-react"
+import { WorkspaceTab } from "./lib/types"
 
 const SUPPORTED_FILE_TYPE = [
   "image/jpeg",
@@ -21,10 +22,11 @@ const SUPPORTED_FILE_TYPE = [
 ]
 
 function Home() {
-  const [file, updateAppState, setFile] = useStore((state) => [
+  const [file, updateAppState, setFile, activeTab] = useStore((state) => [
     state.file,
     state.updateAppState,
     state.setFile,
+    state.activeTab,
   ])
 
   const userInputImage = useInputImage()
@@ -103,12 +105,15 @@ function Home() {
     }
   })
 
+  const NEEDS_FILE_TABS = [WorkspaceTab.INPAINT, WorkspaceTab.OUTPAINT, WorkspaceTab.INTERACTIVE_SEG]
+  const showFileSelect = !file && NEEDS_FILE_TABS.includes(activeTab)
+
   return (
     <main className="flex min-h-screen flex-col items-center justify-between w-full bg-[radial-gradient(circle_at_1px_1px,_#8e8e8e8e_1px,_transparent_0)] [background-size:20px_20px] bg-repeat">
       <Toaster />
       <Header />
       <MainLayout />
-      {!file ? (
+      {showFileSelect ? (
         <FileSelect
           onSelection={async (f) => {
             setFile(f)
