@@ -13,6 +13,7 @@ import SettingsDialog from "./Settings"
 import { cn, fileToImage } from "@/lib/utils"
 import Coffee from "./Coffee"
 import { useToast } from "./ui/use-toast"
+import { WorkspaceTab } from "@/lib/types"
 
 const Header = () => {
   const [
@@ -25,6 +26,7 @@ const Header = () => {
     model,
     user,
     isAuthenticated,
+    activeTab,
     setFile,
     setCustomFile,
     runInpainting,
@@ -44,6 +46,7 @@ const Header = () => {
     state.settings.model,
     state.user,
     state.isAuthenticated,
+    state.activeTab,
     state.setFile,
     state.setCustomFile,
     state.runInpainting,
@@ -180,7 +183,7 @@ const Header = () => {
           )}
         </div>
 
-        {file && !model.need_prompt ? (
+        {file && !model.need_prompt && (activeTab === WorkspaceTab.INPAINT || activeTab === WorkspaceTab.OUTPAINT) ? (
           <IconButton
             disabled={isInpainting}
             tooltip="重新运行上次遮罩"
