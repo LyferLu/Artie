@@ -5,25 +5,30 @@ import SidePanel from "../SidePanel"
 import DiffusionProgress from "../DiffusionProgress"
 import { ExtenderDirection } from "@/lib/types"
 import ImageSize from "../ImageSize"
-import { switchTab } from "@/lib/api"
 
 const OutpaintTab = () => {
-  const [file, settings, updateSettings, updateExtenderDirection] = useStore((state) => [
-    state.file,
-    state.settings,
-    state.updateSettings,
-    state.updateExtenderDirection,
-  ])
+  const [file, settings, serverConfig, updateSettings, updateExtenderDirection] =
+    useStore((state) => [
+      state.file,
+      state.settings,
+      state.serverConfig,
+      state.updateSettings,
+      state.updateExtenderDirection,
+    ])
 
   // Automatically enable extender when switching to this tab
   useEffect(() => {
     updateSettings({ showExtender: true })
     updateExtenderDirection(ExtenderDirection.xy)
-    // 确保后端模型支持外扩（应对刷新后直接进入此 tab 的场景）
+    // 刷新后直接进入该 tab 时，只更新前端模型元数据，不触发后端切模
     if (!settings.model.support_outpainting) {
-      switchTab("outpaint")
-        .then((newModel) => updateSettings({ model: newModel }))
-        .catch(console.error)
+      const fallback =
+        serverConfig.modelInfos.find(
+          (m) => m.name === "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
+        ) ?? serverConfig.modelInfos.find((m) => m.support_outpainting)
+      if (fallback) {
+        updateSettings({ model: fallback })
+      }
     }
     return () => {
       updateSettings({ showExtender: false })

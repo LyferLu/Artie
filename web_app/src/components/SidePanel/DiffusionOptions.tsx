@@ -49,6 +49,7 @@ const ExtenderButton = ({
 const DiffusionOptions = () => {
   const [
     samplers,
+    file,
     settings,
     paintByExampleFile,
     isProcessing,
@@ -65,6 +66,7 @@ const DiffusionOptions = () => {
     updateLCMLora,
   ] = useStore((state) => [
     state.serverConfig.samplers,
+    state.file,
     state.settings,
     state.paintByExampleFile,
     state.getIsProcessing(),
@@ -545,6 +547,17 @@ const DiffusionOptions = () => {
               />
             </div>
           </RowContainer>
+
+          <Button
+            variant="default"
+            className="w-full"
+            disabled={isProcessing || !file || !settings.showExtender}
+            onClick={() => {
+              runInpainting()
+            }}
+          >
+            运行外扩
+          </Button>
         </div>
         <Separator />
       </>

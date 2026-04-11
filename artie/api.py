@@ -158,15 +158,24 @@ def api_middleware(app: FastAPI):
 
 
 global_sio: AsyncServer = None
+global_api: "Api" = None
+
+
+class TaskCancelledError(RuntimeError):
+    pass
 
 
 def diffuser_callback(pipe, step: int, timestep: int, callback_kwargs: Dict = {}):
     # self: DiffusionPipeline, step: int, timestep: int, callback_kwargs: Dict
     # logger.info(f"diffusion callback: step={step}, timestep={timestep}")
+    if global_api is not None and global_api.cancel_event.is_set():
+        raise TaskCancelledError("Task canceled by user")
 
     # We use asyncio loos for task processing. Perhaps in the future, we can add a processing queue similar to InvokeAI,
     # but for now let's just start a separate event loop. It shouldn't make a difference for single person use
     asyncio.run(global_sio.emit("diffusion_progress", {"step": step}))
+    if global_api is not None and global_api.cancel_event.is_set():
+        raise TaskCancelledError("Task canceled by user")
     return {}
 
 
@@ -176,6 +185,9 @@ class Api:
         self.config = config
         self.router = APIRouter()
         self.queue_lock = threading.Lock()
+        self.task_state_lock = threading.Lock()
+        self.cancel_event = threading.Event()
+        self.current_task: Optional[str] = None
         api_middleware(self.app)
 
         # Initialize database and auth
@@ -196,6 +208,7 @@ class Api:
         self.add_api_route("/api/v1/inputimage", self.api_input_image, methods=["GET"])
         self.add_api_route("/api/v1/inpaint", self.api_inpaint, methods=["POST"])
         self.add_api_route("/api/v1/txt2img", self.api_txt2img, methods=["POST"])
+        self.add_api_route("/api/v1/cancel-current-task", self.api_cancel_current_task, methods=["POST"])
         self.add_api_route("/api/v1/vram-status", self.api_vram_status, methods=["GET"], response_model=VramStatusResponse)
         self.add_api_route("/api/v1/switch_plugin_model", self.api_switch_plugin_model, methods=["POST"])
         self.add_api_route("/api/v1/run_plugin_gen_mask", self.api_run_plugin_gen_mask, methods=["POST"])
@@ -223,28 +236,60 @@ class Api:
         self.app.mount("/", StaticFiles(directory=WEB_APP_DIR, html=True), name="assets")
         # fmt: on
 
-        global global_sio
+        global global_sio, global_api
         self.sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
         self.combined_asgi_app = socketio.ASGIApp(self.sio, self.app)
         self.app.mount("/ws", self.combined_asgi_app)
         global_sio = self.sio
+        global_api = self
 
     def add_api_route(self, path: str, endpoint, **kwargs):
         return self.app.add_api_route(path, endpoint, **kwargs)
 
+    def _start_cancelable_task(self, task_name: str):
+        with self.task_state_lock:
+            self.current_task = task_name
+            self.cancel_event.clear()
+
+    def _finish_cancelable_task(self):
+        with self.task_state_lock:
+            self.current_task = None
+            self.cancel_event.clear()
+
+    def _log_exec(
+        self,
+        op: str,
+        before_model: str,
+        target_model: str,
+        switched: bool,
+        seed: int,
+        task_type: Optional[str] = None,
+        requested_model: Optional[str] = None,
+    ):
+        logger.info(
+            "execute op={} task_type={} requested_model={} before_model={} target_model={} switched={} seed={}",
+            op,
+            task_type or "-",
+            requested_model or "-",
+            before_model,
+            target_model,
+            switched,
+            seed,
+        )
+
     def api_save_image(self, file: UploadFile):
-        # Sanitize filename to prevent path traversal
-        safe_filename = Path(file.filename).name  # Get just the filename component
-
-        # Construct the full path within output_dir
-        output_path = self.config.output_dir / safe_filename
-
         # Ensure output directory exists
         if not self.config.output_dir or not self.config.output_dir.exists():
             raise HTTPException(
                 status_code=400,
                 detail="Output directory not configured or doesn't exist",
             )
+
+        # Sanitize filename to prevent path traversal
+        safe_filename = Path(file.filename).name  # Get just the filename component
+
+        # Construct the full path within output_dir
+        output_path = self.config.output_dir / safe_filename
 
         # Read and write the file
         origin_image_bytes = file.file.read()
@@ -255,23 +300,25 @@ class Api:
         return self.model_manager.current_model
 
     def api_switch_model(self, req: SwitchModelRequest) -> ModelInfo:
-        if req.name == self.model_manager.name:
+        with self.queue_lock:
+            if req.name == self.model_manager.name:
+                return self.model_manager.current_model
+            self.model_manager.switch(req.name)
             return self.model_manager.current_model
-        self.model_manager.switch(req.name)
-        return self.model_manager.current_model
 
     def api_switch_tab(self, req: SwitchTabRequest) -> ModelInfo:
-        """切换功能 tab 时自动切换到对应模型。"""
-        from artie.const import SDXL_INPAINT_MODEL, SDXL_BASE_MODEL
-        TAB_MODEL_MAP = {
-            "generate": SDXL_BASE_MODEL,
-            "outpaint": SDXL_INPAINT_MODEL,
-            "inpaint": "lama",
-        }
-        target = TAB_MODEL_MAP.get(req.tab)
-        if target and target in self.model_manager.available_models and target != self.model_manager.name:
-            self.model_manager.switch(target)
+        # Compatibility endpoint: tab switching no longer performs backend model switch.
+        _ = req
         return self.model_manager.current_model
+
+    def api_cancel_current_task(self):
+        with self.task_state_lock:
+            if self.current_task is None:
+                return {"cancel_requested": False, "task": None}
+            self.cancel_event.set()
+            task = self.current_task
+        logger.info(f"Cancel requested for current task: {task}")
+        return {"cancel_requested": True, "task": task}
 
     def api_switch_plugin_model(self, req: SwitchPluginModelRequest):
         if req.plugin_name in self.plugins:
@@ -362,7 +409,47 @@ class Api:
             )
 
         start = time.time()
-        rgb_np_img = self.model_manager(image, mask, req)
+        task_type = req.task_type or ("outpaint" if req.use_extender else "inpaint")
+        with self.queue_lock:
+            self._start_cancelable_task(f"inpaint:{task_type}")
+            try:
+                from artie.const import SDXL_INPAINT_MODEL
+
+                target_model = "lama" if task_type == "inpaint" else SDXL_INPAINT_MODEL
+                if target_model not in self.model_manager.available_models:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Required model for {task_type} is not available: {target_model}",
+                    )
+                before_model = self.model_manager.name
+                switched = False
+                if target_model != self.model_manager.name:
+                    self.model_manager.switch(target_model)
+                    switched = True
+                if task_type == "outpaint" and not self.model_manager.current_model.support_outpainting:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Model {self.model_manager.name} does not support outpainting",
+                    )
+                self._log_exec(
+                    op="inpaint",
+                    task_type=task_type,
+                    requested_model=None,
+                    before_model=before_model,
+                    target_model=target_model,
+                    switched=switched,
+                    seed=req.sd_seed,
+                )
+                if self.cancel_event.is_set():
+                    raise TaskCancelledError("Inpaint canceled by user")
+                rgb_np_img = self.model_manager(image, mask, req)
+            except TaskCancelledError:
+                asyncio.run(self.sio.emit("diffusion_finish"))
+                raise HTTPException(status_code=409, detail="Inpainting canceled by user")
+            except NotImplementedError as e:
+                raise HTTPException(status_code=422, detail=str(e))
+            finally:
+                self._finish_cancelable_task()
         logger.info(f"process time: {(time.time() - start) * 1000:.2f}ms")
         torch_gc()
 
@@ -405,14 +492,51 @@ class Api:
         current_user: Optional[User] = Depends(get_optional_user),
         db: Session = Depends(get_db),
     ):
-        if not self.model_manager.current_model.support_txt2img:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Current model {self.model_manager.name} does not support text-to-image generation",
-            )
-
         start = time.time()
-        bgr_np_img = self.model_manager.txt2img(req)
+        with self.queue_lock:
+            self._start_cancelable_task("txt2img")
+            try:
+                before_model = self.model_manager.name
+                target_model = req.model_name or self.model_manager.name
+                switched = False
+                if req.model_name:
+                    if req.model_name not in self.model_manager.available_models:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Requested model is not available: {req.model_name}",
+                        )
+                    if not self.model_manager.available_models[req.model_name].support_txt2img:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Requested model {req.model_name} does not support text-to-image generation",
+                        )
+                    if req.model_name != self.model_manager.name:
+                        self.model_manager.switch(req.model_name)
+                        switched = True
+                if not self.model_manager.current_model.support_txt2img:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Current model {self.model_manager.name} does not support text-to-image generation",
+                    )
+                self._log_exec(
+                    op="txt2img",
+                    task_type=None,
+                    requested_model=req.model_name,
+                    before_model=before_model,
+                    target_model=target_model,
+                    switched=switched,
+                    seed=req.sd_seed,
+                )
+                if self.cancel_event.is_set():
+                    raise TaskCancelledError("Txt2img canceled by user")
+                bgr_np_img = self.model_manager.txt2img(req)
+            except TaskCancelledError:
+                asyncio.run(self.sio.emit("diffusion_finish"))
+                raise HTTPException(status_code=409, detail="Text-to-image generation canceled by user")
+            except NotImplementedError as e:
+                raise HTTPException(status_code=422, detail=str(e))
+            finally:
+                self._finish_cancelable_task()
         logger.info(f"txt2img process time: {(time.time() - start) * 1000:.2f}ms")
 
         rgb_np_img = cv2.cvtColor(bgr_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)

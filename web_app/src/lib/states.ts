@@ -43,6 +43,7 @@ import inpaint, {
   authLogin,
   authMe,
   authRegister,
+  cancelCurrentTask as cancelCurrentTaskApi,
   createProject,
   deleteImage,
   deleteProject,
@@ -52,7 +53,6 @@ import inpaint, {
   postAdjustMask,
   runPlugin,
   setAuthToken,
-  switchTab,
   txt2img,
 } from "./api"
 import { toast } from "@/components/ui/use-toast"
@@ -188,6 +188,7 @@ type AppState = {
   activeTab: WorkspaceTab
   generatedImages: Array<{ url: string; seed: string }>
   isGenerating: boolean
+  isCancelingTask: boolean
   // 全局工作图片，所有标签页共享
   workingImage: { file: File; url: string } | null
 
@@ -278,6 +279,7 @@ type AppAction = {
 
   setActiveTab: (tab: WorkspaceTab) => void
   runTxt2Img: () => Promise<void>
+  cancelCurrentTask: () => Promise<void>
   clearGeneratedImages: () => void
   sendToTab: (blobUrl: string, tab: WorkspaceTab) => Promise<void>
   setWorkingImage: (file: File) => void
@@ -431,6 +433,7 @@ const defaultValues: AppState = {
   activeTab: WorkspaceTab.INPAINT,
   generatedImages: [],
   isGenerating: false,
+  isCancelingTask: false,
   workingImage: null,
 
   user: null,
@@ -567,6 +570,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
 
         set((state) => {
           state.isInpainting = true
+          state.isCancelingTask = false
         })
 
         let targetFile = file
@@ -639,6 +643,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         get().resetRedoState()
         set((state) => {
           state.isInpainting = false
+          state.isCancelingTask = false
           state.editorState.temporaryMasks = []
         })
       },
@@ -1258,14 +1263,33 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           }
         }
 
-        // 保留原有的模型切换逻辑
-        const MODEL_TABS = [WorkspaceTab.GENERATE, WorkspaceTab.INPAINT, WorkspaceTab.OUTPAINT]
-        if (MODEL_TABS.includes(tab)) {
-          switchTab(tab).then((newModel) => {
-            set((state) => {
-              state.settings.model = castDraft(newModel)
-            })
-          }).catch(console.error)
+        // tab 切换仅更新前端使用的模型元数据，不触发后端切模。
+        const modelInfos = get().serverConfig.modelInfos
+        const findModel = (name: string) =>
+          modelInfos.find((m) => m.name === name)
+
+        let tabModel: ModelInfo | undefined
+        if (tab === WorkspaceTab.INPAINT) {
+          tabModel =
+            findModel("lama") ?? modelInfos.find((m) => m.model_type === MODEL_TYPE_INPAINT)
+        } else if (tab === WorkspaceTab.OUTPAINT) {
+          tabModel =
+            findModel("diffusers/stable-diffusion-xl-1.0-inpainting-0.1") ??
+            modelInfos.find((m) => m.support_outpainting)
+        } else if (tab === WorkspaceTab.GENERATE) {
+          if (get().settings.model.support_txt2img) {
+            tabModel = get().settings.model
+          } else {
+            tabModel =
+              findModel("stabilityai/stable-diffusion-xl-base-1.0") ??
+              modelInfos.find((m) => m.support_txt2img)
+          }
+        }
+
+        if (tabModel) {
+          set((state) => {
+            state.settings.model = castDraft(tabModel)
+          })
         }
       },
 
@@ -1286,7 +1310,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           set((state) => {
             state.workingImage = castDraft({ file, url })
           })
-          get().setActiveTab(tab)  // 使用 setActiveTab 而非直接设置，确保模型切换等逻辑执行
+          get().setActiveTab(tab)  // 使用 setActiveTab 而非直接设置，确保 tab 上下文逻辑执行
         } catch (e) {
           console.error("sendToTab failed:", e)
         }
@@ -1302,17 +1326,32 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
       },
 
       runTxt2Img: async () => {
-        const { settings } = get()
-        if (!settings.model.support_txt2img) return
+        const { settings, serverConfig } = get()
+        let selectedModel = settings.model
+        if (!selectedModel.support_txt2img) {
+          const fallback = serverConfig.modelInfos.find((m) => m.support_txt2img)
+          if (!fallback) {
+            toast({
+              variant: "destructive",
+              title: "Generation failed",
+              description: "No text-to-image model is available on this server.",
+            })
+            return
+          }
+          selectedModel = fallback
+          get().updateSettings({ model: fallback })
+        }
 
         set((state) => {
           state.isGenerating = true
+          state.isCancelingTask = false
         })
 
         try {
           const result = await txt2img({
             prompt: settings.prompt,
             negativePrompt: settings.negativePrompt,
+            modelName: selectedModel.name,
             width: settings.txt2imgWidth,
             height: settings.txt2imgHeight,
             steps: settings.sdSteps,
@@ -1339,6 +1378,41 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         } finally {
           set((state) => {
             state.isGenerating = false
+            state.isCancelingTask = false
+          })
+        }
+      },
+
+      cancelCurrentTask: async () => {
+        const { isInpainting, isGenerating, isCancelingTask } = get()
+        if ((!isInpainting && !isGenerating) || isCancelingTask) {
+          return
+        }
+        set((state) => {
+          state.isCancelingTask = true
+        })
+        try {
+          const res = await cancelCurrentTaskApi()
+          if (res.cancel_requested) {
+            toast({
+              description: `Cancel request sent (${res.task ?? "task"})`,
+            })
+          } else {
+            toast({
+              description: "No running task to cancel.",
+            })
+            set((state) => {
+              state.isCancelingTask = false
+            })
+          }
+        } catch (e: any) {
+          toast({
+            variant: "destructive",
+            title: "Cancel failed",
+            description: e.message ? e.message : e.toString(),
+          })
+          set((state) => {
+            state.isCancelingTask = false
           })
         }
       },

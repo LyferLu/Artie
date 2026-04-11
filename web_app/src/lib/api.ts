@@ -37,9 +37,13 @@ const api = axios.create({
 })
 
 const throwErrors = async (res: any): Promise<never> => {
-  const errMsg = await res.json()
+  const errMsg = await res.json().catch(() => ({}))
+  const detail = errMsg.errors || errMsg.detail || `HTTP ${res.status}`
+  if (res.status === 409) {
+    throw new Error(detail)
+  }
   throw new Error(
-    `${errMsg.errors}\nPlease take a screenshot of the detailed error message in your terminal`
+    `${detail}\nPlease take a screenshot of the detailed error message in your terminal`
   )
 }
 
@@ -82,6 +86,7 @@ export default async function inpaint(
       croper_height: croperRect.height,
       croper_width: croperRect.width,
       use_extender: settings.showExtender,
+      task_type: settings.showExtender ? "outpaint" : "inpaint",
       extender_x: extenderState.x,
       extender_y: extenderState.y,
       extender_height: extenderState.height,
@@ -127,11 +132,6 @@ export async function getServerConfig(): Promise<ServerConfig> {
 
 export async function switchModel(name: string): Promise<ModelInfo> {
   const res = await api.post(`/model`, { name })
-  return res.data
-}
-
-export async function switchTab(tab: string): Promise<ModelInfo> {
-  const res = await api.post(`/switch-tab`, { tab })
   return res.data
 }
 
@@ -252,6 +252,7 @@ export async function getSamplers(): Promise<string[]> {
 export interface Txt2ImgParams {
   prompt: string
   negativePrompt: string
+  modelName?: string
   width: number
   height: number
   steps: number
@@ -271,6 +272,7 @@ export async function txt2img(params: Txt2ImgParams) {
     body: JSON.stringify({
       prompt: params.prompt,
       negative_prompt: params.negativePrompt,
+      model_name: params.modelName,
       width: params.width,
       height: params.height,
       sd_steps: params.steps,
@@ -288,6 +290,14 @@ export async function txt2img(params: Txt2ImgParams) {
     }
   }
   throw await throwErrors(res)
+}
+
+export async function cancelCurrentTask(): Promise<{
+  cancel_requested: boolean
+  task: string | null
+}> {
+  const res = await api.post("/cancel-current-task")
+  return res.data
 }
 
 export async function postAdjustMask(

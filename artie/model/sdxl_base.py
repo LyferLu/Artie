@@ -35,11 +35,17 @@ class SDXLBase(DiffusionInpaintModel):
             "local_files_only": is_local_files_only(**kwargs),
         }
         if "vae" not in model_kwargs:
-            vae = AutoencoderKL.from_pretrained(
-                "madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch_dtype,
-                local_files_only=is_local_files_only(**kwargs),
-            )
-            model_kwargs["vae"] = vae
+            try:
+                vae = AutoencoderKL.from_pretrained(
+                    "madebyollin/sdxl-vae-fp16-fix",
+                    torch_dtype=torch_dtype,
+                    local_files_only=is_local_files_only(**kwargs),
+                )
+                model_kwargs["vae"] = vae
+            except Exception as e:
+                logger.warning(
+                    f"Load sdxl-vae-fp16-fix failed, fallback to model default VAE: {e}"
+                )
 
         self.model = handle_from_pretrained_exceptions(
             StableDiffusionXLPipeline.from_pretrained,

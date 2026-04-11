@@ -20,6 +20,7 @@ const Header = () => {
     file,
     customMask,
     isInpainting,
+    isProcessing,
     serverConfig,
     runMannually,
     enableUploadMask,
@@ -40,6 +41,7 @@ const Header = () => {
     state.file,
     state.customMask,
     state.isInpainting,
+    state.getIsProcessing(),
     state.serverConfig,
     state.runMannually(),
     state.settings.enableUploadMask,
@@ -73,6 +75,10 @@ const Header = () => {
   const onRerunMouseLeave = () => {
     hidePrevMask()
   }
+
+  const canRunOutpaint = serverConfig.modelInfos.some(
+    (m) => m.support_outpainting
+  )
 
   const handleOnPhotoClick = async (tab: string, filename: string) => {
     try {
@@ -192,6 +198,18 @@ const Header = () => {
             onMouseLeave={onRerunMouseLeave}
           >
             <RotateCw />
+          </IconButton>
+        ) : (
+          <></>
+        )}
+
+        {file && activeTab === WorkspaceTab.OUTPAINT && canRunOutpaint ? (
+          <IconButton
+            disabled={isProcessing}
+            tooltip="运行外扩"
+            onClick={runInpainting}
+          >
+            <PlayIcon />
           </IconButton>
         ) : (
           <></>

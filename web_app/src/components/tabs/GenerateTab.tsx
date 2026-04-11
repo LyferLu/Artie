@@ -34,7 +34,7 @@ import {
   RECOMMENDED_MODELS,
   RESOLUTION_PRESETS,
 } from "@/lib/const"
-import { switchModel, switchTab } from "@/lib/api"
+import { switchModel } from "@/lib/api"
 import { PluginName } from "@/lib/types"
 
 const SDXL_TYPES = [MODEL_TYPE_DIFFUSERS_SDXL, MODEL_TYPE_DIFFUSERS_SDXL_INPAINT]
@@ -65,17 +65,15 @@ const GenerateTab = () => {
   const [isSwitchingModel, setIsSwitchingModel] = useState(false)
   const [showRecommended, setShowRecommended] = useState(false)
 
-  // 挂载时确保后端模型支持 txt2img（应对页面刷新后直接进入此 tab 的场景）
+  // 刷新后直接进入文生图 tab 时，确保前端选中的模型支持 txt2img。
   useEffect(() => {
     if (!settings.model.support_txt2img) {
-      setIsSwitchingModel(true)
-      switchTab("generate")
-        .then((newModel) => updateSettings({ model: newModel }))
-        .catch(console.error)
-        .finally(() => setIsSwitchingModel(false))
+      const fallback = serverConfig.modelInfos.find((m) => m.support_txt2img)
+      if (fallback) {
+        updateSettings({ model: fallback })
+      }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [serverConfig.modelInfos, settings.model.support_txt2img, updateSettings])
 
   const isDisabled = isGenerating || isSwitchingModel
 
@@ -432,7 +430,7 @@ const GenerateTab = () => {
                       </span>
                     )}
                   </div>
-                  {isDownloaded && !isActive && !serverConfig.disableModelSwitch && (
+                  {isDownloaded && !isActive && (
                     <Button
                       variant="outline"
                       size="sm"

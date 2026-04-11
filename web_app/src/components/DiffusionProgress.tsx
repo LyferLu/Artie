@@ -2,6 +2,8 @@ import * as React from "react"
 import io from "socket.io-client"
 import { Progress } from "./ui/progress"
 import { useStore } from "@/lib/states"
+import { Button } from "./ui/button"
+import { Square } from "lucide-react"
 
 export const API_ENDPOINT = import.meta.env.DEV
   ? import.meta.env.VITE_BACKEND
@@ -9,10 +11,12 @@ export const API_ENDPOINT = import.meta.env.DEV
 const socket = io(API_ENDPOINT)
 
 const DiffusionProgress = () => {
-  const [settings, isInpainting, isGenerating, isSD] = useStore((state) => [
+  const [settings, isInpainting, isGenerating, isCancelingTask, cancelCurrentTask, isSD] = useStore((state) => [
     state.settings,
     state.isInpainting,
     state.isGenerating,
+    state.isCancelingTask,
+    state.cancelCurrentTask,
     state.isSD(),
   ])
 
@@ -50,13 +54,25 @@ const DiffusionProgress = () => {
 
   return (
     <div
-      className="z-10 fixed bg-background w-[220px] left-1/2 -translate-x-1/2 top-[68px] h-[32px] flex justify-center items-center gap-[18px] border-[1px] border-[solid] rounded-[14px] pl-[8px] pr-[8px]"
+      className="z-10 fixed bg-background w-[320px] left-1/2 -translate-x-1/2 top-[68px] h-[40px] flex justify-center items-center gap-3 border-[1px] border-[solid] rounded-[14px] pl-[8px] pr-[8px]"
       style={{
         visibility: isConnected && (isInpainting || isGenerating) && isSD ? "visible" : "hidden",
       }}
     >
       <Progress value={progress} />
       <div className="w-[45px] flex justify-center font-nums">{progress}%</div>
+      <Button
+        size="sm"
+        variant="destructive"
+        className="h-7 px-2 text-xs gap-1"
+        disabled={isCancelingTask}
+        onClick={() => {
+          cancelCurrentTask()
+        }}
+      >
+        <Square className="h-3 w-3" />
+        {isCancelingTask ? "停止中..." : "停止"}
+      </Button>
     </div>
   )
 }

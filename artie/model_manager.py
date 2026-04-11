@@ -266,19 +266,21 @@ class ModelManager:
 
         old_name = self.name
         old_controlnet_method = self.controlnet_method
-        self.name = new_name
-
-        if (
-            self.available_models[new_name].support_controlnet
-            and self.controlnet_method
+        new_controlnet_method = self.controlnet_method
+        if self.available_models[new_name].support_controlnet and (
+            new_controlnet_method
             not in self.available_models[new_name].controlnets
         ):
-            self.controlnet_method = self.available_models[new_name].controlnets[0]
+            new_controlnet_method = self.available_models[new_name].controlnets[0]
         try:
             # Use LRU cache: old model stays cached, new model loaded on miss
-            self.model = self._load_and_cache(
+            new_model = self._load_and_cache(
                 new_name, switch_mps_device(new_name, self.device), **self.kwargs
             )
+            # Keep name/model/controlnet_method consistent in one shot.
+            self.name = new_name
+            self.controlnet_method = new_controlnet_method
+            self.model = new_model
         except Exception as e:
             self.name = old_name
             self.controlnet_method = old_controlnet_method
@@ -400,6 +402,15 @@ class ModelManager:
 
     def enable_disable_lcm_lora(self, config):
         if self.available_models[self.name].support_lcm_lora:
+            if not hasattr(self.model, "model"):
+                return
+            # Some non-diffusers backends (or transient states during switch) do not
+            # expose PEFT adapter APIs.
+            if not hasattr(self.model.model, "get_list_adapters"):
+                logger.warning(
+                    f"Current backend does not support LoRA adapters, skip LCM toggle: {type(self.model.model).__name__}"
+                )
+                return
             # TODO: change this if load other lora is supported
             lcm_lora_loaded = bool(self.model.model.get_list_adapters())
             if config.sd_lcm_lora:

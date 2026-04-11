@@ -90,8 +90,6 @@ class ModelInfo(BaseModel):
     @property
     def support_outpainting(self) -> bool:
         return self.model_type in [
-            ModelType.DIFFUSERS_SD,
-            ModelType.DIFFUSERS_SDXL,
             ModelType.DIFFUSERS_SD_INPAINT,
             ModelType.DIFFUSERS_SDXL_INPAINT,
         ] or self.name in [KANDINSKY22_NAME, POWERPAINT_NAME]
@@ -128,10 +126,7 @@ class ModelInfo(BaseModel):
     @property
     def support_txt2img(self) -> bool:
         return self.model_type in [
-            ModelType.DIFFUSERS_SD,
             ModelType.DIFFUSERS_SDXL,
-            ModelType.DIFFUSERS_SD_INPAINT,
-            ModelType.DIFFUSERS_SDXL_INPAINT,
         ]
 
     @computed_field
@@ -303,6 +298,9 @@ class ApiConfig(BaseModel):
 class InpaintRequest(BaseModel):
     image: Optional[str] = Field(None, description="base64 encoded image")
     mask: Optional[str] = Field(None, description="base64 encoded mask")
+    task_type: Optional[Literal["inpaint", "outpaint"]] = Field(
+        None, description="Frontend task intent: inpaint or outpaint"
+    )
 
     ldm_steps: int = Field(20, description="Steps for ldm model.")
     ldm_sampler: str = Field(LDMSampler.plms, description="Sampler for ldm model.")
@@ -438,6 +436,9 @@ class InpaintRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_field(cls, values: "InpaintRequest"):
+        if values.task_type is None:
+            values.task_type = "outpaint" if values.use_extender else "inpaint"
+
         if values.sd_seed == -1:
             values.sd_seed = random.randint(1, 99999999)
             logger.info(f"Generate random seed: {values.sd_seed}")
@@ -545,6 +546,9 @@ class SwitchTabRequest(BaseModel):
 class Txt2ImgRequest(BaseModel):
     prompt: str = Field(..., description="Text prompt for image generation")
     negative_prompt: str = Field("", description="Negative prompt")
+    model_name: Optional[str] = Field(
+        None, description="Target model name for text-to-image generation"
+    )
     width: int = Field(512, ge=64, le=2048, description="Output image width")
     height: int = Field(512, ge=64, le=2048, description="Output image height")
     sd_steps: int = Field(50, description="Number of denoising steps")

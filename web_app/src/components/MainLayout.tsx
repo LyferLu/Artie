@@ -31,7 +31,7 @@ interface TabDef {
 interface TabVisibilityCtx {
   supportTxt2img: boolean
   hasAnyTxt2imgModel: boolean
-  supportOutpainting: boolean
+  hasAnyOutpaintingModel: boolean
   hasRemoveBG: boolean
   hasRealESRGAN: boolean
   hasGFPGAN: boolean
@@ -56,7 +56,7 @@ const TAB_DEFS: TabDef[] = [
     id: WorkspaceTab.OUTPAINT,
     label: "外扩",
     icon: <Expand className="h-5 w-5" />,
-    visible: (ctx) => ctx.supportOutpainting,
+    visible: (ctx) => ctx.hasAnyOutpaintingModel,
   },
   {
     id: WorkspaceTab.REMOVE_BG,
@@ -105,11 +105,12 @@ const MainLayout = () => {
   )
 
   const hasAnyTxt2imgModel = serverConfig.modelInfos.some((m) => m.support_txt2img)
+  const hasAnyOutpaintingModel = serverConfig.modelInfos.some((m) => m.support_outpainting)
 
   const visCtx: TabVisibilityCtx = {
     supportTxt2img: model.support_txt2img,
     hasAnyTxt2imgModel,
-    supportOutpainting: model.support_outpainting,
+    hasAnyOutpaintingModel,
     hasRemoveBG: hasPlugin(serverConfig.plugins, PluginName.RemoveBG),
     hasRealESRGAN: hasPlugin(serverConfig.plugins, PluginName.RealESRGAN),
     hasGFPGAN: hasPlugin(serverConfig.plugins, PluginName.GFPGAN),
@@ -183,7 +184,7 @@ const MainLayout = () => {
   return (
     <>
       {/* Left vertical tab bar */}
-      <div className="fixed left-0 top-[60px] bottom-0 w-16 border-r border-border bg-background/80 backdrop-blur-md z-10 flex flex-col gap-1 py-2">
+      <div className="fixed left-0 top-[60px] bottom-0 w-16 border-r border-border bg-background/80 backdrop-blur-md z-10 flex flex-col gap-1 py-2 overflow-y-auto overflow-x-hidden">
         {visibleTabs.map((tab) => (
           <button
             key={tab.id}
