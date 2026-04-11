@@ -110,7 +110,7 @@ You can see more information about the available models and plugins supported by
 Install [nodejs](https://nodejs.org/en), then install the frontend dependencies.
 
 ```bash
-git clone https://github.com/Sanster/Artie.git
+git clone https://github.com/LyferLu/Artie.git
 cd Artie/web_app
 npm install
 npm run build
