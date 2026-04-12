@@ -1,5 +1,6 @@
 import { useEffect } from "react"
 import { useStore } from "@/lib/states"
+import { OUTPAINT_MODEL } from "@/lib/const"
 import Editor from "../Editor"
 import SidePanel from "../SidePanel"
 import DiffusionProgress from "../DiffusionProgress"
@@ -21,17 +22,11 @@ const OutpaintTab = () => {
     updateSettings({ showExtender: true })
     updateExtenderDirection(ExtenderDirection.xy)
     // 刷新后直接进入该 tab 时，只更新前端模型元数据，不触发后端切模
-    if (!settings.model.support_outpainting) {
-      const fallback =
-        serverConfig.modelInfos.find(
-          (m) => m.name === "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
-        ) ?? serverConfig.modelInfos.find((m) => m.support_outpainting)
-      if (fallback) {
-        updateSettings({ model: fallback })
-      }
-    }
-    return () => {
-      updateSettings({ showExtender: false })
+    const outpaintModel = serverConfig.modelInfos.find(
+      (m) => m.name === OUTPAINT_MODEL
+    )
+    if (outpaintModel && outpaintModel.name !== settings.model.name) {
+      updateSettings({ model: outpaintModel })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

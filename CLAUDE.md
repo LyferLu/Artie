@@ -124,15 +124,15 @@ web_app/src/
       GenerateTab.tsx       — Text-to-image UI
       InpaintTab.tsx        — Canvas + SidePanel + Plugins
       OutpaintTab.tsx       — Canvas with extender auto-enabled
-      RemoveBGTab.tsx       — Standalone upload → rembg pipeline
-      SuperResTab.tsx       — Standalone upload → RealESRGAN pipeline
-      FaceRestoreTab.tsx    — Standalone upload → GFPGAN/RestoreFormer
+      RemoveBGTab.tsx       — RemoveBG pipeline; reads/writes workingImage
+      SuperResTab.tsx       — RealESRGAN pipeline; reads/writes workingImage
+      FaceRestoreTab.tsx    — GFPGAN/RestoreFormer pipeline; reads/writes workingImage
       InteractiveSegTab.tsx — SAM interactive selection
       MyWorkspaceTab.tsx    — Project/image gallery (auth handled at App level)
     ui/               — shadcn/ui components (Radix + Tailwind)
 ```
 
-**State design:** A single `useStore` hook (Zustand) holds everything. `activeTab: WorkspaceTab` drives which tab panel renders. `workspaceMode: WorkspaceMode` is kept in sync for legacy compatibility. Auth token is persisted in Zustand's `partialize` (along with `settings` and `fileManagerState`).
+**State design:** A single `useStore` hook (Zustand) holds everything. `activeTab: WorkspaceTab` drives which tab panel renders. Auth token is persisted in Zustand's `partialize` (along with `settings`, `fileManagerState`, and `activeTab`).
 
 **Auth flow:** `App.tsx` fetches `serverConfig` on mount, then calls `restoreSession()`. If `serverConfig.enableAuth` is true and user is not authenticated, `AuthPage` is rendered (full-page gate). When `--disable-auth` is used, `enableAuth` is false and the auth page is skipped entirely.
 
@@ -144,6 +144,8 @@ web_app/src/
 - **Real-time progress:** Socket.IO (`/ws`) emits `diffusion_progress` (step N) and `diffusion_finish`; frontend listens via `DiffusionProgress.tsx`.
 - **Model switching:** `ModelManager.switch(name)` leaves the old model in LRU cache; `ModelCache._evict_if_needed` evicts by VRAM pressure or count.
 - **txt2img:** Uses `SDXLBase` with `StableDiffusionXLPipeline` (separate from the inpaint model). This is a distinct model load, not a reuse of inpaint pipeline components.
+- **Cross-tab image flow:** `workingImage: { file, url }` in Zustand is the universal current image. `setActiveTab` snapshots the canvas result into `workingImage` when leaving an editor tab (Inpaint/Outpaint/InteractiveSeg), and loads `workingImage` into the canvas when entering one. Plugin tabs (RemoveBG/SuperRes/FaceRestore) read `workingImage` as their source and call `setWorkingImage` on local upload. `sendToTab(blobUrl, tab)` writes to `workingImage` then calls `setActiveTab`. Do NOT reintroduce `pendingFile`/`consumePendingFile` — these were replaced.
+- **FileSelect visibility:** `FileSelect` overlay only appears when `!file && activeTab ∈ {INPAINT, OUTPAINT, INTERACTIVE_SEG}`. It does not block plugin tabs or GenerateTab.
 
 ## Important Constraints
 

@@ -50,6 +50,7 @@ const throwErrors = async (res: any): Promise<never> => {
 export default async function inpaint(
   imageFile: File,
   settings: Settings,
+  taskType: "inpaint" | "outpaint" | "repaint",
   croperRect: Rect,
   extenderState: Rect,
   mask: File | Blob,
@@ -60,6 +61,9 @@ export default async function inpaint(
   const exampleImageBase64 = paintByExampleImage
     ? await convertToBase64(paintByExampleImage)
     : null
+  const prompt = taskType === "outpaint" ? "" : settings.prompt
+  const negativePrompt =
+    taskType === "outpaint" ? "" : settings.negativePrompt
 
   const res = await fetch(`${API_ENDPOINT}/inpaint`, {
     method: "POST",
@@ -78,15 +82,15 @@ export default async function inpaint(
       hd_strategy_crop_triger_size: 640,
       hd_strategy_crop_margin: 128,
       hd_trategy_resize_imit: 2048,
-      prompt: settings.prompt,
-      negative_prompt: settings.negativePrompt,
+      prompt,
+      negative_prompt: negativePrompt,
       use_croper: settings.showCropper,
       croper_x: croperRect.x,
       croper_y: croperRect.y,
       croper_height: croperRect.height,
       croper_width: croperRect.width,
       use_extender: settings.showExtender,
-      task_type: settings.showExtender ? "outpaint" : "inpaint",
+      task_type: taskType,
       extender_x: extenderState.x,
       extender_y: extenderState.y,
       extender_height: extenderState.height,

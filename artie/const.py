@@ -25,14 +25,16 @@ DEFAULT_MODEL = "lama"
 AVAILABLE_MODELS = ["lama", "ldm", "zits", "mat", "fcf", "manga", "cv2", "migan"]
 
 # 功能→模型映射
-SDXL_INPAINT_MODEL = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
 SDXL_BASE_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
+REPAINT_MODEL = POWERPAINT_NAME
+TXT2IMG_JUGGERNAUT_MODEL = "RunDiffusion/Juggernaut-XI-v11"
 
 # 启动时必须下载的模型列表（按顺序下载）
 REQUIRED_MODELS = [
     "lama",              # AI 擦除（快速，轻量）
-    SDXL_INPAINT_MODEL,  # AI 修复（prompt）/ 外扩
     SDXL_BASE_MODEL,     # 文生图（原生 4-channel UNet）
+    REPAINT_MODEL,       # AI 重绘 / 外扩（PowerPaint）
+    TXT2IMG_JUGGERNAUT_MODEL,  # 文生图（Juggernaut XI）
 ]
 DIFFUSION_MODELS = [
     "runwayml/stable-diffusion-inpainting",

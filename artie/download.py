@@ -18,6 +18,47 @@ from artie.const import (
 )
 from artie.model.original_sd_configs import get_config_files
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+HF_PROJECT_CONFIG_PATH = PROJECT_ROOT / "secrets.json"
+HF_USER_CONFIG_PATH = Path.home() / ".artie" / "secrets.json"
+
+
+def _hf_token_config_paths() -> List[Path]:
+    # Project-local config has higher priority, user-level config is fallback.
+    return [HF_PROJECT_CONFIG_PATH, HF_USER_CONFIG_PATH]
+
+
+def _resolve_hf_token() -> tuple[Optional[str], Optional[Path]]:
+    """
+    Read HuggingFace token from local config file(s).
+    Search order:
+    1) <project>/secrets.json
+    2) ~/.artie/secrets.json
+    Expected JSON: {"hf_token": "hf_xxx"}
+    """
+    for cfg_path in _hf_token_config_paths():
+        if not cfg_path.exists():
+            continue
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            token = str(data.get("hf_token", "")).strip()
+            if token:
+                return token, cfg_path
+        except Exception as e:
+            logger.warning(f"Failed to read local token config {cfg_path}: {e}")
+    return None, None
+
+
+def _is_gated_repo_error(exc: Exception) -> bool:
+    msg = str(exc)
+    return (
+        exc.__class__.__name__ == "GatedRepoError"
+        or "Cannot access gated repo" in msg
+        or ("Access to model" in msg and "is restricted" in msg)
+        or "401 Client Error" in msg
+    )
+
 
 def cli_download_model(model: str):
     from artie.model import models
@@ -35,9 +76,35 @@ def cli_download_model(model: str):
         logger.info(f"Downloading model from Huggingface: {model}")
         from diffusers import DiffusionPipeline
 
-        downloaded_path = handle_from_pretrained_exceptions(
-            DiffusionPipeline.download, pretrained_model_name=model, variant="fp16"
-        )
+        download_kwargs = {
+            "pretrained_model_name": model,
+            "variant": "fp16",
+        }
+        try:
+            # First try anonymous/public download.
+            downloaded_path = handle_from_pretrained_exceptions(
+                DiffusionPipeline.download, **download_kwargs
+            )
+        except Exception as e:
+            if not _is_gated_repo_error(e):
+                raise
+
+            token, token_path = _resolve_hf_token()
+            if not token:
+                config_paths = ", ".join(str(p) for p in _hf_token_config_paths())
+                raise RuntimeError(
+                    "检测到受限模型，需要 HuggingFace token。请在以下任一配置文件中写入 token：\n"
+                    f"{config_paths}\n"
+                    '示例内容: {"hf_token": "hf_xxx"}'
+                ) from e
+
+            logger.info(
+                f"Model is gated, retry download with token from: {token_path}"
+            )
+            downloaded_path = handle_from_pretrained_exceptions(
+                DiffusionPipeline.download,
+                **{**download_kwargs, "token": token},
+            )
         logger.info(f"Done. Downloaded to {downloaded_path}")
 
 
@@ -330,7 +397,18 @@ def ensure_all_models_downloaded():
     for name in REQUIRED_MODELS:
         if name not in scanned_names:
             logger.info(f"  下载模型: {name}")
-            cli_download_model(name)
+            try:
+                cli_download_model(name)
+            except Exception as e:
+                if _is_gated_repo_error(e):
+                    config_paths = ", ".join(str(p) for p in _hf_token_config_paths())
+                    raise RuntimeError(
+                        "下载受限模型失败。请先在 HuggingFace 获取该模型访问权限，并在本地配置 token。\n"
+                        f"配置文件（任一）: {config_paths}\n"
+                        '示例内容: {"hf_token": "hf_xxx"}\n'
+                        f"失败模型: {name}"
+                    ) from e
+                raise
             logger.info(f"  完成: {name}")
         else:
             logger.info(f"  已就绪: {name}")

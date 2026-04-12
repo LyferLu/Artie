@@ -105,7 +105,12 @@ function Home() {
     }
   })
 
-  const NEEDS_FILE_TABS = [WorkspaceTab.INPAINT, WorkspaceTab.OUTPAINT, WorkspaceTab.INTERACTIVE_SEG]
+  const NEEDS_FILE_TABS = [
+    WorkspaceTab.INPAINT,
+    WorkspaceTab.OUTPAINT,
+    WorkspaceTab.AI_REPAINT,
+    WorkspaceTab.INTERACTIVE_SEG,
+  ]
   const showFileSelect = !file && NEEDS_FILE_TABS.includes(activeTab)
 
   return (

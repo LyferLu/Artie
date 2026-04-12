@@ -298,8 +298,8 @@ class ApiConfig(BaseModel):
 class InpaintRequest(BaseModel):
     image: Optional[str] = Field(None, description="base64 encoded image")
     mask: Optional[str] = Field(None, description="base64 encoded mask")
-    task_type: Optional[Literal["inpaint", "outpaint"]] = Field(
-        None, description="Frontend task intent: inpaint or outpaint"
+    task_type: Optional[Literal["inpaint", "outpaint", "repaint"]] = Field(
+        None, description="Frontend task intent: inpaint / outpaint / repaint"
     )
 
     ldm_steps: int = Field(20, description="Steps for ldm model.")
@@ -540,7 +540,7 @@ class AdjustMaskRequest(BaseModel):
 
 
 class SwitchTabRequest(BaseModel):
-    tab: str  # "generate" | "inpaint" | "outpaint"
+    tab: str  # "generate" | "inpaint" | "outpaint" | "ai_repaint"
 
 
 class Txt2ImgRequest(BaseModel):

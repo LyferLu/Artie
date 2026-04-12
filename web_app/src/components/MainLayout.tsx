@@ -3,6 +3,7 @@ import { WorkspaceTab, PluginName } from "@/lib/types"
 import {
   Wand2,
   Pencil,
+  Edit2,
   Expand,
   Scissors,
   Zap,
@@ -15,6 +16,7 @@ import DiffusionProgress from "./DiffusionProgress"
 import GenerateTab from "./tabs/GenerateTab"
 import InpaintTab from "./tabs/InpaintTab"
 import OutpaintTab from "./tabs/OutpaintTab"
+import AIRepaintTab from "./tabs/AIRepaintTab"
 import RemoveBGTab from "./tabs/RemoveBGTab"
 import SuperResTab from "./tabs/SuperResTab"
 import FaceRestoreTab from "./tabs/FaceRestoreTab"
@@ -57,6 +59,12 @@ const TAB_DEFS: TabDef[] = [
     label: "外扩",
     icon: <Expand className="h-5 w-5" />,
     visible: (ctx) => ctx.hasAnyOutpaintingModel,
+  },
+  {
+    id: WorkspaceTab.AI_REPAINT,
+    label: "AI重绘",
+    icon: <Edit2 className="h-5 w-5" />,
+    visible: (ctx) => ctx.supportTxt2img || ctx.hasAnyTxt2imgModel,
   },
   {
     id: WorkspaceTab.REMOVE_BG,
@@ -144,6 +152,12 @@ const MainLayout = () => {
         return (
           <div className="absolute top-0 left-[64px] right-0 bottom-0">
             <OutpaintTab />
+          </div>
+        )
+      case WorkspaceTab.AI_REPAINT:
+        return (
+          <div className="absolute top-0 left-[64px] right-0 bottom-0">
+            <AIRepaintTab />
           </div>
         )
       case WorkspaceTab.REMOVE_BG:

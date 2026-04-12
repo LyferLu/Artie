@@ -11,7 +11,7 @@ import {
   SelectValue,
 } from "../ui/select"
 import { Textarea } from "../ui/textarea"
-import { ExtenderDirection, PowerPaintTask } from "@/lib/types"
+import { ExtenderDirection, PowerPaintTask, WorkspaceTab } from "@/lib/types"
 import { Separator } from "../ui/separator"
 import { Button, ImageUploadButton } from "../ui/button"
 import { Slider } from "../ui/slider"
@@ -50,6 +50,7 @@ const DiffusionOptions = () => {
   const [
     samplers,
     file,
+    activeTab,
     settings,
     paintByExampleFile,
     isProcessing,
@@ -67,6 +68,7 @@ const DiffusionOptions = () => {
   ] = useStore((state) => [
     state.serverConfig.samplers,
     state.file,
+    state.activeTab,
     state.settings,
     state.paintByExampleFile,
     state.getIsProcessing(),
@@ -309,7 +311,7 @@ const DiffusionOptions = () => {
   }
 
   const renderNegativePrompt = () => {
-    if (!settings.model.need_prompt) {
+    if (!settings.model.need_prompt || activeTab === WorkspaceTab.OUTPAINT) {
       return null
     }
 

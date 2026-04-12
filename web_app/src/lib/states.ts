@@ -24,11 +24,13 @@ import {
   WorkspaceTab,
 } from "./types"
 import {
+  AI_REPAINT_MODEL,
   BRUSH_COLOR,
   DEFAULT_BRUSH_SIZE,
   DEFAULT_NEGATIVE_PROMPT,
   MAX_BRUSH_SIZE,
   MODEL_TYPE_INPAINT,
+  OUTPAINT_MODEL,
   PAINT_BY_EXAMPLE,
 } from "./const"
 import {
@@ -136,6 +138,8 @@ export type Settings = {
   txt2imgHeight: number
 }
 
+type FeatureSettingsMap = Record<WorkspaceTab, Settings>
+
 type InteractiveSegState = {
   isInteractiveSeg: boolean
   tmpInteractiveSegMask: HTMLImageElement | null
@@ -184,6 +188,7 @@ type AppState = {
   serverConfig: ServerConfig
 
   settings: Settings
+  settingsByFeature: FeatureSettingsMap
 
   activeTab: WorkspaceTab
   generatedImages: Array<{ url: string; seed: string }>
@@ -299,6 +304,145 @@ type AppAction = {
   deleteUserImage: (id: string) => Promise<void>
 }
 
+const createDefaultModelInfo = (): ModelInfo => ({
+  name: "lama",
+  path: "lama",
+  model_type: "inpaint",
+  support_controlnet: false,
+  support_brushnet: false,
+  support_strength: false,
+  support_outpainting: false,
+  support_powerpaint_v2: false,
+  controlnets: [],
+  brushnets: [],
+  support_lcm_lora: false,
+  support_txt2img: false,
+  is_single_file_diffusers: false,
+  need_prompt: false,
+})
+
+const cloneModelInfo = (model: ModelInfo): ModelInfo => ({
+  ...model,
+  controlnets: [...model.controlnets],
+  brushnets: [...model.brushnets],
+})
+
+const cloneSettings = (settings: Settings): Settings => ({
+  ...settings,
+  model: cloneModelInfo(settings.model),
+})
+
+const createBaseSettings = (): Settings => ({
+  model: createDefaultModelInfo(),
+  showCropper: false,
+  showExtender: false,
+  extenderDirection: ExtenderDirection.xy,
+  enableDownloadMask: false,
+  enableManualInpainting: false,
+  enableUploadMask: false,
+  enableAutoExtractPrompt: true,
+  ldmSteps: 30,
+  ldmSampler: LDMSampler.ddim,
+  zitsWireframe: true,
+  cv2Radius: 5,
+  cv2Flag: CV2Flag.INPAINT_NS,
+  prompt: "",
+  negativePrompt: DEFAULT_NEGATIVE_PROMPT,
+  seed: 42,
+  seedFixed: false,
+  sdMaskBlur: 12,
+  sdStrength: 1.0,
+  sdSteps: 30,
+  sdGuidanceScale: 7.5,
+  sdSampler: "DPM++ 2M",
+  sdMatchHistograms: false,
+  sdScale: 1.0,
+  p2pImageGuidanceScale: 1.5,
+  enableControlnet: false,
+  controlnetMethod: "lllyasviel/control_v11p_sd15_canny",
+  controlnetConditioningScale: 0.4,
+  enableBrushNet: false,
+  brushnetMethod: "random_mask",
+  brushnetConditioningScale: 1.0,
+  enableLCMLora: false,
+  enablePowerPaintV2: false,
+  powerpaintTask: PowerPaintTask.text_guided,
+  adjustMaskKernelSize: 12,
+  txt2imgWidth: 512,
+  txt2imgHeight: 512,
+})
+
+const createDefaultSettingsForTab = (tab: WorkspaceTab): Settings => {
+  const base = createBaseSettings()
+
+  if (tab === WorkspaceTab.OUTPAINT) {
+    return {
+      ...base,
+      prompt: "",
+      negativePrompt: "",
+      showExtender: true,
+      showCropper: false,
+      sdSteps: 30,
+      sdGuidanceScale: 10.0,
+      powerpaintTask: PowerPaintTask.outpainting,
+    }
+  }
+
+  if (tab === WorkspaceTab.AI_REPAINT) {
+    return {
+      ...base,
+      prompt: "",
+      negativePrompt: DEFAULT_NEGATIVE_PROMPT,
+      showExtender: false,
+      sdSteps: 30,
+      sdGuidanceScale: 7.5,
+      powerpaintTask: PowerPaintTask.text_guided,
+    }
+  }
+
+  if (tab === WorkspaceTab.GENERATE) {
+    return {
+      ...base,
+      prompt: "",
+      negativePrompt: DEFAULT_NEGATIVE_PROMPT,
+      showExtender: false,
+      showCropper: false,
+      txt2imgWidth: 1024,
+      txt2imgHeight: 1024,
+      sdSteps: 30,
+      sdGuidanceScale: 6.0,
+    }
+  }
+
+  if (tab === WorkspaceTab.INPAINT) {
+    return {
+      ...base,
+      prompt: "",
+      negativePrompt: DEFAULT_NEGATIVE_PROMPT,
+      showExtender: false,
+      showCropper: false,
+      sdSteps: 30,
+      sdGuidanceScale: 7.5,
+    }
+  }
+
+  return base
+}
+
+const createDefaultSettingsByFeature = (): FeatureSettingsMap => ({
+  [WorkspaceTab.GENERATE]: createDefaultSettingsForTab(WorkspaceTab.GENERATE),
+  [WorkspaceTab.INPAINT]: createDefaultSettingsForTab(WorkspaceTab.INPAINT),
+  [WorkspaceTab.OUTPAINT]: createDefaultSettingsForTab(WorkspaceTab.OUTPAINT),
+  [WorkspaceTab.AI_REPAINT]: createDefaultSettingsForTab(WorkspaceTab.AI_REPAINT),
+  [WorkspaceTab.REMOVE_BG]: createDefaultSettingsForTab(WorkspaceTab.REMOVE_BG),
+  [WorkspaceTab.SUPER_RES]: createDefaultSettingsForTab(WorkspaceTab.SUPER_RES),
+  [WorkspaceTab.FACE_RESTORE]: createDefaultSettingsForTab(WorkspaceTab.FACE_RESTORE),
+  [WorkspaceTab.INTERACTIVE_SEG]: createDefaultSettingsForTab(
+    WorkspaceTab.INTERACTIVE_SEG
+  ),
+  [WorkspaceTab.MY_WORKSPACE]: createDefaultSettingsForTab(WorkspaceTab.MY_WORKSPACE),
+})
+
 const defaultValues: AppState = {
   file: null,
   paintByExampleFile: null,
@@ -375,60 +519,8 @@ const defaultValues: AppState = {
     samplers: ["DPM++ 2M SDE Karras"],
     enableAuth: true,
   },
-  settings: {
-    model: {
-      name: "lama",
-      path: "lama",
-      model_type: "inpaint",
-      support_controlnet: false,
-      support_brushnet: false,
-      support_strength: false,
-      support_outpainting: false,
-      support_powerpaint_v2: false,
-      controlnets: [],
-      brushnets: [],
-      support_lcm_lora: false,
-      support_txt2img: false,
-      is_single_file_diffusers: false,
-      need_prompt: false,
-    },
-    showCropper: false,
-    showExtender: false,
-    extenderDirection: ExtenderDirection.xy,
-    enableDownloadMask: false,
-    enableManualInpainting: false,
-    enableUploadMask: false,
-    enableAutoExtractPrompt: true,
-    ldmSteps: 30,
-    ldmSampler: LDMSampler.ddim,
-    zitsWireframe: true,
-    cv2Radius: 5,
-    cv2Flag: CV2Flag.INPAINT_NS,
-    prompt: "",
-    negativePrompt: DEFAULT_NEGATIVE_PROMPT,
-    seed: 42,
-    seedFixed: false,
-    sdMaskBlur: 12,
-    sdStrength: 1.0,
-    sdSteps: 50,
-    sdGuidanceScale: 7.5,
-    sdSampler: "DPM++ 2M",
-    sdMatchHistograms: false,
-    sdScale: 1.0,
-    p2pImageGuidanceScale: 1.5,
-    enableControlnet: false,
-    controlnetMethod: "lllyasviel/control_v11p_sd15_canny",
-    controlnetConditioningScale: 0.4,
-    enableBrushNet: false,
-    brushnetMethod: "random_mask",
-    brushnetConditioningScale: 1.0,
-    enableLCMLora: false,
-    enablePowerPaintV2: false,
-    powerpaintTask: PowerPaintTask.text_guided,
-    adjustMaskKernelSize: 12,
-    txt2imgWidth: 512,
-    txt2imgHeight: 512,
-  },
+  settings: createDefaultSettingsForTab(WorkspaceTab.INPAINT),
+  settingsByFeature: createDefaultSettingsByFeature(),
 
   activeTab: WorkspaceTab.INPAINT,
   generatedImages: [],
@@ -510,6 +602,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           imageWidth,
           imageHeight,
           settings,
+          activeTab,
           cropperState,
           extenderState,
         } = get()
@@ -608,9 +701,48 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         }
 
         try {
+          const inpaintTaskType =
+            activeTab === WorkspaceTab.AI_REPAINT
+              ? "repaint"
+              : activeTab === WorkspaceTab.OUTPAINT
+              ? "outpaint"
+              : "inpaint"
+
+          // AI重绘/外扩固定使用 PowerPaint，缺失时在前端提前拦截，避免不透明的 422。
+          const fixedTaskModelName =
+            inpaintTaskType === "repaint"
+              ? AI_REPAINT_MODEL
+              : inpaintTaskType === "outpaint"
+              ? OUTPAINT_MODEL
+              : null
+          if (fixedTaskModelName) {
+            const fixedModelInfo = get().serverConfig.modelInfos.find(
+              (m) => m.name === fixedTaskModelName
+            )
+            if (!fixedModelInfo) {
+              toast({
+                variant: "destructive",
+                title: "Missing required model",
+                description:
+                  `当前任务需要模型 ${fixedTaskModelName}，但本地不可用。` +
+                  "请先下载该模型（或去掉 --local-files-only 后重启让程序自动下载）。",
+              })
+              set((state) => {
+                state.isInpainting = false
+                state.isCancelingTask = false
+                state.editorState.temporaryMasks = []
+              })
+              return
+            }
+            if (settings.model.name !== fixedTaskModelName) {
+              get().updateSettings({ model: fixedModelInfo })
+            }
+          }
+
           const res = await inpaint(
             targetFile,
             settings,
+            inpaintTaskType,
             cropperState,
             extenderState,
             dataURItoBlob(maskCanvas.toDataURL()),
@@ -884,15 +1016,25 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.serverConfig = newValue
           state.settings.enableControlnet = newValue.enableControlnet
           state.settings.controlnetMethod = newValue.controlnetMethod
+          for (const tab of Object.values(WorkspaceTab) as WorkspaceTab[]) {
+            state.settingsByFeature[tab].enableControlnet =
+              newValue.enableControlnet
+            state.settingsByFeature[tab].controlnetMethod =
+              newValue.controlnetMethod
+          }
         })
       },
 
       updateSettings: (newSettings: Partial<Settings>) => {
         set((state) => {
-          state.settings = {
+          const merged = {
             ...state.settings,
             ...newSettings,
           }
+          state.settings = merged
+          state.settingsByFeature[state.activeTab] = castDraft(
+            cloneSettings(merged)
+          )
         })
       },
 
@@ -948,6 +1090,9 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           ) {
             state.settings.controlnetMethod = newModel.controlnets[0]
           }
+          state.settingsByFeature[state.activeTab] = castDraft(
+            cloneSettings(state.settings)
+          )
         })
       },
 
@@ -1005,18 +1150,22 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         }),
 
       setFile: async (file: File) => {
-        if (get().settings.enableAutoExtractPrompt) {
+        const autoPromptTabs = [
+          WorkspaceTab.INPAINT,
+          WorkspaceTab.AI_REPAINT,
+          WorkspaceTab.GENERATE,
+        ]
+        if (
+          get().settings.enableAutoExtractPrompt &&
+          autoPromptTabs.includes(get().activeTab)
+        ) {
           try {
             const res = await getGenInfo(file)
             if (res.prompt) {
-              set((state) => {
-                state.settings.prompt = res.prompt
-              })
+              get().updateSettings({ prompt: res.prompt })
             }
             if (res.negative_prompt) {
-              set((state) => {
-                state.settings.negativePrompt = res.negative_prompt
-              })
+              get().updateSettings({ negativePrompt: res.negative_prompt })
             }
           } catch (e: any) {
             toast({
@@ -1182,6 +1331,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
       setSeed: (newValue: number) =>
         set((state) => {
           state.settings.seed = newValue
+          state.settingsByFeature[state.activeTab].seed = newValue
         }),
 
       adjustMask: async (operate: AdjustMaskOperate) => {
@@ -1230,7 +1380,12 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
 
       setActiveTab: (tab: WorkspaceTab) => {
         const prevTab = get().activeTab
-        const EDITOR_TABS = [WorkspaceTab.INPAINT, WorkspaceTab.OUTPAINT, WorkspaceTab.INTERACTIVE_SEG]
+        const EDITOR_TABS = [
+          WorkspaceTab.INPAINT,
+          WorkspaceTab.OUTPAINT,
+          WorkspaceTab.AI_REPAINT,
+          WorkspaceTab.INTERACTIVE_SEG,
+        ]
 
         // 离开画布标签页时，快照最新编辑结果到 workingImage
         if (EDITOR_TABS.includes(prevTab)) {
@@ -1253,7 +1408,12 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           }
         }
 
-        set(state => { state.activeTab = tab })
+        set((state) => {
+          state.settingsByFeature[prevTab] = castDraft(
+            cloneSettings(state.settings)
+          )
+          state.activeTab = tab
+        })
 
         // 进入画布标签页时，如果 workingImage 存在且 file 为空，自动加载
         if (EDITOR_TABS.includes(tab)) {
@@ -1268,17 +1428,21 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         const findModel = (name: string) =>
           modelInfos.find((m) => m.name === name)
 
+        const savedSettings = get().settingsByFeature[tab]
+          ? cloneSettings(get().settingsByFeature[tab])
+          : createDefaultSettingsForTab(tab)
+
         let tabModel: ModelInfo | undefined
         if (tab === WorkspaceTab.INPAINT) {
           tabModel =
             findModel("lama") ?? modelInfos.find((m) => m.model_type === MODEL_TYPE_INPAINT)
         } else if (tab === WorkspaceTab.OUTPAINT) {
-          tabModel =
-            findModel("diffusers/stable-diffusion-xl-1.0-inpainting-0.1") ??
-            modelInfos.find((m) => m.support_outpainting)
+          tabModel = findModel(OUTPAINT_MODEL)
+        } else if (tab === WorkspaceTab.AI_REPAINT) {
+          tabModel = findModel(AI_REPAINT_MODEL)
         } else if (tab === WorkspaceTab.GENERATE) {
-          if (get().settings.model.support_txt2img) {
-            tabModel = get().settings.model
+          if (savedSettings.model.support_txt2img) {
+            tabModel = savedSettings.model
           } else {
             tabModel =
               findModel("stabilityai/stable-diffusion-xl-base-1.0") ??
@@ -1288,7 +1452,22 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
 
         if (tabModel) {
           set((state) => {
-            state.settings.model = castDraft(tabModel)
+            savedSettings.model = tabModel
+            if (tab === WorkspaceTab.OUTPAINT) {
+              savedSettings.showExtender = true
+              savedSettings.showCropper = false
+            }
+            state.settings = castDraft(cloneSettings(savedSettings))
+            state.settingsByFeature[tab] = castDraft(cloneSettings(savedSettings))
+          })
+        } else {
+          set((state) => {
+            if (tab === WorkspaceTab.OUTPAINT) {
+              savedSettings.showExtender = true
+              savedSettings.showCropper = false
+            }
+            state.settings = castDraft(cloneSettings(savedSettings))
+            state.settingsByFeature[tab] = castDraft(cloneSettings(savedSettings))
           })
         }
       },
@@ -1528,7 +1707,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
     })),
     {
       name: "ZUSTAND_STATE",
-      version: 4,
+      version: 5,
       migrate: (persistedState: any, version: number) => {
         if (version < 4) {
           // Add txt2imgWidth/txt2imgHeight defaults if missing
@@ -1543,12 +1722,18 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           // Remove legacy workspaceMode
           delete persistedState.workspaceMode
         }
+        if (version < 5) {
+          // Feature settings are session-only from v5 onward.
+          delete persistedState.settings
+          delete persistedState.settingsByFeature
+          delete persistedState.activeTab
+        }
         return persistedState
       },
       partialize: (state) =>
         Object.fromEntries(
           Object.entries(state).filter(([key]) =>
-            ["fileManagerState", "settings", "token", "activeTab"].includes(key)
+            ["fileManagerState", "token"].includes(key)
           )
         ),
     }

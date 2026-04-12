@@ -14,6 +14,7 @@ import { cn, fileToImage } from "@/lib/utils"
 import Coffee from "./Coffee"
 import { useToast } from "./ui/use-toast"
 import { WorkspaceTab } from "@/lib/types"
+import { AI_REPAINT_MODEL } from "@/lib/const"
 
 const Header = () => {
   const [
@@ -78,6 +79,9 @@ const Header = () => {
 
   const canRunOutpaint = serverConfig.modelInfos.some(
     (m) => m.support_outpainting
+  )
+  const canRunAIRepaint = serverConfig.modelInfos.some(
+    (m) => m.name === AI_REPAINT_MODEL
   )
 
   const handleOnPhotoClick = async (tab: string, filename: string) => {
@@ -207,6 +211,18 @@ const Header = () => {
           <IconButton
             disabled={isProcessing}
             tooltip="运行外扩"
+            onClick={runInpainting}
+          >
+            <PlayIcon />
+          </IconButton>
+        ) : (
+          <></>
+        )}
+
+        {file && activeTab === WorkspaceTab.AI_REPAINT && canRunAIRepaint ? (
+          <IconButton
+            disabled={isProcessing}
+            tooltip="运行AI重绘"
             onClick={runInpainting}
           >
             <PlayIcon />

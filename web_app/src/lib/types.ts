@@ -137,6 +137,7 @@ export enum WorkspaceTab {
   GENERATE = "generate",
   INPAINT = "inpaint",
   OUTPAINT = "outpaint",
+  AI_REPAINT = "ai_repaint",
   REMOVE_BG = "remove_bg",
   SUPER_RES = "super_res",
   FACE_RESTORE = "face_restore",

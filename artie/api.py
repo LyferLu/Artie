@@ -78,6 +78,7 @@ from artie.schema import (
     RealESRGANModel,
     Txt2ImgRequest,
     SwitchTabRequest,
+    ModelType,
     VramStatusResponse,
     UserCreate,
     UserLogin,
@@ -410,12 +411,27 @@ class Api:
 
         start = time.time()
         task_type = req.task_type or ("outpaint" if req.use_extender else "inpaint")
+        if task_type == "outpaint":
+            # Outpaint is promptless in UI and API contract.
+            req.prompt = ""
+            req.negative_prompt = ""
         with self.queue_lock:
             self._start_cancelable_task(f"inpaint:{task_type}")
             try:
-                from artie.const import SDXL_INPAINT_MODEL
+                from artie.const import REPAINT_MODEL
 
-                target_model = "lama" if task_type == "inpaint" else SDXL_INPAINT_MODEL
+                task_model_map = {
+                    "inpaint": "lama",
+                    "outpaint": REPAINT_MODEL,
+                    "repaint": REPAINT_MODEL,
+                }
+                if task_type not in task_model_map:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Unsupported task type: {task_type}",
+                    )
+
+                target_model = task_model_map[task_type]
                 if target_model not in self.model_manager.available_models:
                     raise HTTPException(
                         status_code=422,
@@ -424,7 +440,16 @@ class Api:
                 before_model = self.model_manager.name
                 switched = False
                 if target_model != self.model_manager.name:
-                    self.model_manager.switch(target_model)
+                    switch_variant = "default"
+                    if (
+                        task_type == "repaint"
+                        and self.model_manager.available_models[
+                            target_model
+                        ].model_type
+                        == ModelType.DIFFUSERS_SDXL
+                    ):
+                        switch_variant = "inpaint_compat"
+                    self.model_manager.switch(target_model, variant=switch_variant)
                     switched = True
                 if task_type == "outpaint" and not self.model_manager.current_model.support_outpainting:
                     raise HTTPException(

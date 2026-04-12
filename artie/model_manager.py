@@ -134,7 +134,8 @@ class ModelManager:
             max_vram_gb=kwargs.get("max_vram_usage_gb", None),
         )
 
-        self.model = self._load_and_cache(name, device, **kwargs)
+        self.active_variant = "default"
+        self.model = self._load_and_cache(name, device, variant="default", **kwargs)
 
     @property
     def current_model(self) -> ModelInfo:
@@ -143,7 +144,7 @@ class ModelManager:
     def cached_model_names(self) -> List[str]:
         return self._cache.cached_keys()
 
-    def _cache_key(self, name: str) -> str:
+    def _cache_key(self, name: str, variant: str = "default") -> str:
         """Build a cache key that encodes the model name plus active wrappers."""
         suffix = ""
         if self.enable_controlnet and self.controlnet_method:
@@ -152,11 +153,13 @@ class ModelManager:
             suffix += f"+brushnet_{self.brushnet_method}"
         if self.enable_powerpaint_v2:
             suffix += "+powerpaint_v2"
+        if variant != "default":
+            suffix += f"+variant_{variant}"
         return f"{name}{suffix}"
 
-    def _load_and_cache(self, name: str, device, **kwargs):
+    def _load_and_cache(self, name: str, device, variant: str = "default", **kwargs):
         """Return model from cache if available, otherwise load and cache it."""
-        key = self._cache_key(name)
+        key = self._cache_key(name, variant)
         cached = self._cache.get(key)
         if cached is not None:
             return cached
@@ -167,7 +170,7 @@ class ModelManager:
             if torch.cuda.is_available()
             else 0.0
         )
-        model = self.init_model(name, device, **kwargs)
+        model = self.init_model(name, device, variant=variant, **kwargs)
         vram_after = (
             torch.cuda.memory_allocated() / (1024 ** 3)
             if torch.cuda.is_available()
@@ -177,7 +180,7 @@ class ModelManager:
         self._cache.put(key, model, vram_used)
         return model
 
-    def init_model(self, name: str, device, **kwargs):
+    def init_model(self, name: str, device, variant: str = "default", **kwargs):
         logger.info(f"Loading model: {name}")
         if name not in self.available_models:
             raise NotImplementedError(
@@ -219,9 +222,22 @@ class ModelManager:
             return SDXL(device, **kwargs)
 
         if model_info.model_type == ModelType.DIFFUSERS_SDXL:
+            if variant == "inpaint_compat":
+                return SDXL(device, **kwargs)
             return SDXLBase(device, **kwargs)
 
         raise NotImplementedError(f"Unsupported model: {name}")
+
+    def _ensure_variant(self, variant: str):
+        if self.active_variant == variant:
+            return
+        self.model = self._load_and_cache(
+            self.name,
+            switch_mps_device(self.name, self.device),
+            variant=variant,
+            **self.kwargs,
+        )
+        self.active_variant = variant
 
     @torch.inference_mode()
     def txt2img(self, config: Txt2ImgRequest):
@@ -229,6 +245,7 @@ class ModelManager:
             raise NotImplementedError(
                 f"Model {self.name} does not support text-to-image generation"
             )
+        self._ensure_variant("default")
         self.enable_disable_lcm_lora(config)
         result = self.model.txt2img(config)
         torch_gc()
@@ -246,6 +263,17 @@ class ModelManager:
         Returns:
             BGR image
         """
+        if (
+            config.task_type == "repaint"
+            and self.current_model.model_type == ModelType.DIFFUSERS_SDXL
+        ):
+            self._ensure_variant("inpaint_compat")
+        elif (
+            self.current_model.model_type == ModelType.DIFFUSERS_SDXL
+            and self.active_variant != "default"
+        ):
+            self._ensure_variant("default")
+
         if config.enable_controlnet:
             self.switch_controlnet_method(config)
         if config.enable_brushnet:
@@ -260,11 +288,13 @@ class ModelManager:
         self.available_models = {it.name: it for it in available_models}
         return available_models
 
-    def switch(self, new_name: str):
+    def switch(self, new_name: str, variant: str = "default"):
         if new_name == self.name:
+            self._ensure_variant(variant)
             return
 
         old_name = self.name
+        old_variant = self.active_variant
         old_controlnet_method = self.controlnet_method
         new_controlnet_method = self.controlnet_method
         if self.available_models[new_name].support_controlnet and (
@@ -275,19 +305,27 @@ class ModelManager:
         try:
             # Use LRU cache: old model stays cached, new model loaded on miss
             new_model = self._load_and_cache(
-                new_name, switch_mps_device(new_name, self.device), **self.kwargs
+                new_name,
+                switch_mps_device(new_name, self.device),
+                variant=variant,
+                **self.kwargs,
             )
             # Keep name/model/controlnet_method consistent in one shot.
             self.name = new_name
             self.controlnet_method = new_controlnet_method
             self.model = new_model
+            self.active_variant = variant
         except Exception as e:
             self.name = old_name
+            self.active_variant = old_variant
             self.controlnet_method = old_controlnet_method
             logger.info(f"Switch model from {old_name} to {new_name} failed, rollback")
             # Rollback: retrieve from cache (was the active model before switch)
             self.model = self._load_and_cache(
-                old_name, switch_mps_device(old_name, self.device), **self.kwargs
+                old_name,
+                switch_mps_device(old_name, self.device),
+                variant=old_variant,
+                **self.kwargs,
             )
             raise e
 

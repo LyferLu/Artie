@@ -18,6 +18,9 @@ export const INSTRUCT_PIX2PIX = "timbrooks/instruct-pix2pix"
 export const KANDINSKY_2_2 = "kandinsky-community/kandinsky-2-2-decoder-inpaint"
 export const POWERPAINT = "Sanster/PowerPaint-V1-stable-diffusion-inpainting"
 export const ANYTEXT = "Sanster/AnyText"
+export const OUTPAINT_MODEL = POWERPAINT
+export const AI_REPAINT_MODEL = POWERPAINT
+export const TXT2IMG_JUGGERNAUT_MODEL = "RunDiffusion/Juggernaut-XI-v11"
 
 export const DEFAULT_NEGATIVE_PROMPT =
   "out of frame, lowres, error, cropped, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, out of frame, mutation, deformed, blurry, dehydrated, bad anatomy, bad proportions, extra limbs, disfigured, gross proportions, malformed limbs, watermark, signature"
@@ -113,7 +116,7 @@ export const RECOMMENDED_MODELS: RecommendedModel[] = [
     type: MODEL_TYPE_DIFFUSERS_SDXL,
   },
   {
-    name: "RunDiffusion/Juggernaut-XI-v11",
+    name: TXT2IMG_JUGGERNAUT_MODEL,
     label: "Juggernaut XI",
     description: "照片级写实，高细节，人像/场景效果极佳",
     vramGb: 6.5,

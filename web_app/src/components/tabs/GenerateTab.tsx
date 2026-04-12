@@ -430,15 +430,19 @@ const GenerateTab = () => {
                       </span>
                     )}
                   </div>
-                  {isDownloaded && !isActive && (
+                  {!isActive && (
                     <Button
                       variant="outline"
                       size="sm"
                       className="h-7 px-2 text-xs shrink-0"
-                      disabled={isDisabled}
-                      onClick={() => handleSwitchModel(rec.name)}
+                      disabled={isDisabled || !isDownloaded}
+                      onClick={() => {
+                        if (isDownloaded) {
+                          handleSwitchModel(rec.name)
+                        }
+                      }}
                     >
-                      切换
+                      {isDownloaded ? "切换" : "未下载"}
                     </Button>
                   )}
                 </div>

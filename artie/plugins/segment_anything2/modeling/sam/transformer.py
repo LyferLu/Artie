@@ -12,6 +12,7 @@ from typing import Tuple, Type
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
+from loguru import logger
 
 from ..position_encoding import apply_rotary_enc, compute_axial_cis
 
@@ -20,6 +21,31 @@ from ...utils.misc import get_sdpa_settings
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 OLD_GPU, USE_FLASH_ATTN, MATH_KERNEL_ON = get_sdpa_settings()
+
+
+def _sdpa_with_fallback(q: Tensor, k: Tensor, v: Tensor, dropout_p: float) -> Tensor:
+    try:
+        with torch.backends.cuda.sdp_kernel(
+            enable_flash=USE_FLASH_ATTN,
+            # if Flash attention kernel is off, then math kernel needs to be enabled
+            enable_math=(OLD_GPU and dropout_p > 0.0) or MATH_KERNEL_ON,
+            enable_mem_efficient=OLD_GPU,
+        ):
+            return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+    except RuntimeError as e:
+        # Some GPU/dtype combinations cannot run with Flash-only settings.
+        # Fallback to math kernel to keep InteractiveSeg usable.
+        if "No available kernel" not in str(e):
+            raise
+        logger.warning(
+            "SAM2 SDPA fallback to math kernel due to unavailable flash/mem-efficient kernel"
+        )
+        with torch.backends.cuda.sdp_kernel(
+            enable_flash=False,
+            enable_math=True,
+            enable_mem_efficient=False,
+        ):
+            return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
 
 class TwoWayTransformer(nn.Module):
@@ -246,13 +272,7 @@ class Attention(nn.Module):
 
         dropout_p = self.dropout_p if self.training else 0.0
         # Attention
-        with torch.backends.cuda.sdp_kernel(
-            enable_flash=USE_FLASH_ATTN,
-            # if Flash attention kernel is off, then math kernel needs to be enabled
-            enable_math=(OLD_GPU and dropout_p > 0.0) or MATH_KERNEL_ON,
-            enable_mem_efficient=OLD_GPU,
-        ):
-            out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+        out = _sdpa_with_fallback(q, k, v, dropout_p)
 
         out = self._recombine_heads(out)
         out = self.out_proj(out)
@@ -313,13 +333,7 @@ class RoPEAttention(Attention):
 
         dropout_p = self.dropout_p if self.training else 0.0
         # Attention
-        with torch.backends.cuda.sdp_kernel(
-            enable_flash=USE_FLASH_ATTN,
-            # if Flash attention kernel is off, then math kernel needs to be enabled
-            enable_math=(OLD_GPU and dropout_p > 0.0) or MATH_KERNEL_ON,
-            enable_mem_efficient=OLD_GPU,
-        ):
-            out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+        out = _sdpa_with_fallback(q, k, v, dropout_p)
 
         out = self._recombine_heads(out)
         out = self.out_proj(out)
