@@ -89,11 +89,18 @@ type GeneratedImage = {
   seed: string
 }
 
+type FeatureResultTab =
+  | WorkspaceTab.REMOVE_BG
+  | WorkspaceTab.SUPER_RES
+  | WorkspaceTab.FACE_RESTORE
+
 type FeatureResultState = {
   selectedModel?: string
   selectedPlugin?: string
   sourceImage: ImageRef | null
   resultImage: ImageRef | null
+  resultHistory: ImageRef[]
+  resultHistoryIndex: number
 }
 
 export type Settings = {
@@ -316,15 +323,19 @@ type AppAction = {
   setWorkingImage: (file: File) => void
   loadImageForTab: (file: File, tab: WorkspaceTab) => Promise<void>
   selectGeneratedImage: (index: number) => void
-  setFeatureSourceImage: (tab: WorkspaceTab.REMOVE_BG | WorkspaceTab.SUPER_RES | WorkspaceTab.FACE_RESTORE, file: File) => void
+  setFeatureSourceImage: (tab: FeatureResultTab, file: File) => void
   setFeatureResultImage: (
-    tab: WorkspaceTab.REMOVE_BG | WorkspaceTab.SUPER_RES | WorkspaceTab.FACE_RESTORE,
+    tab: FeatureResultTab,
     file: File | null
   ) => void
   setFeatureSelectedModel: (
-    tab: WorkspaceTab.REMOVE_BG | WorkspaceTab.SUPER_RES | WorkspaceTab.FACE_RESTORE,
+    tab: FeatureResultTab,
     value: string
   ) => void
+  undoFeatureResult: (tab: FeatureResultTab) => void
+  redoFeatureResult: (tab: FeatureResultTab) => void
+  undoFeatureResultDisabled: (tab: FeatureResultTab) => boolean
+  redoFeatureResultDisabled: (tab: FeatureResultTab) => boolean
   clearCurrentWorkspace: () => void
   saveWorkspace: () => Promise<void>
   fetchWorkspaces: (search?: string, feature?: string) => Promise<void>
@@ -486,6 +497,8 @@ const createEmptyFeatureResultState = (): FeatureResultState => ({
   selectedPlugin: undefined,
   sourceImage: null,
   resultImage: null,
+  resultHistory: [],
+  resultHistoryIndex: -1,
 })
 
 const revokeImageRef = (ref: ImageRef | null) => {
@@ -496,6 +509,35 @@ const makeImageRef = (file: File): ImageRef => ({
   file,
   url: URL.createObjectURL(file),
 })
+
+const revokeImageRefs = (refs: ImageRef[]) => {
+  refs.forEach((ref) => revokeImageRef(ref))
+}
+
+const clearFeatureResultHistory = (state: FeatureResultState) => {
+  revokeImageRefs(state.resultHistory)
+  state.resultHistory = []
+  state.resultHistoryIndex = -1
+  state.resultImage = null
+}
+
+const pushFeatureResultHistory = (state: FeatureResultState, file: File) => {
+  const redoRefs = state.resultHistory.slice(state.resultHistoryIndex + 1)
+  revokeImageRefs(redoRefs)
+  state.resultHistory = state.resultHistory.slice(0, state.resultHistoryIndex + 1)
+
+  const next = makeImageRef(file)
+  state.resultHistory.push(next)
+  state.resultHistoryIndex = state.resultHistory.length - 1
+  state.resultImage = castDraft(next)
+}
+
+const syncFeatureResultImage = (state: FeatureResultState) => {
+  state.resultImage =
+    state.resultHistoryIndex >= 0
+      ? castDraft(state.resultHistory[state.resultHistoryIndex])
+      : null
+}
 
 const EDITOR_TABS = [
   WorkspaceTab.INPAINT,
@@ -1675,24 +1717,79 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         get().setWorkingImage(file)
       },
 
+      undoFeatureResultDisabled: (tab) => {
+        const target =
+          tab === WorkspaceTab.REMOVE_BG
+            ? get().removeBgState
+            : tab === WorkspaceTab.SUPER_RES
+            ? get().superResState
+            : get().faceRestoreState
+
+        return target.resultHistoryIndex < 0
+      },
+
+      redoFeatureResultDisabled: (tab) => {
+        const target =
+          tab === WorkspaceTab.REMOVE_BG
+            ? get().removeBgState
+            : tab === WorkspaceTab.SUPER_RES
+            ? get().superResState
+            : get().faceRestoreState
+
+        return target.resultHistoryIndex >= target.resultHistory.length - 1
+      },
+
+      undoFeatureResult: (tab) => {
+        set((state) => {
+          const target =
+            tab === WorkspaceTab.REMOVE_BG
+              ? state.removeBgState
+              : tab === WorkspaceTab.SUPER_RES
+              ? state.superResState
+              : state.faceRestoreState
+
+          if (target.resultHistoryIndex < 0) {
+            return
+          }
+
+          target.resultHistoryIndex -= 1
+          syncFeatureResultImage(target)
+        })
+      },
+
+      redoFeatureResult: (tab) => {
+        set((state) => {
+          const target =
+            tab === WorkspaceTab.REMOVE_BG
+              ? state.removeBgState
+              : tab === WorkspaceTab.SUPER_RES
+              ? state.superResState
+              : state.faceRestoreState
+
+          if (target.resultHistoryIndex >= target.resultHistory.length - 1) {
+            return
+          }
+
+          target.resultHistoryIndex += 1
+          syncFeatureResultImage(target)
+        })
+      },
+
       setFeatureSourceImage: (tab, file) => {
         set((state) => {
           const next = makeImageRef(file)
           if (tab === WorkspaceTab.REMOVE_BG) {
             revokeImageRef(state.removeBgState.sourceImage)
             state.removeBgState.sourceImage = castDraft(next)
-            revokeImageRef(state.removeBgState.resultImage)
-            state.removeBgState.resultImage = null
+            clearFeatureResultHistory(state.removeBgState)
           } else if (tab === WorkspaceTab.SUPER_RES) {
             revokeImageRef(state.superResState.sourceImage)
             state.superResState.sourceImage = castDraft(next)
-            revokeImageRef(state.superResState.resultImage)
-            state.superResState.resultImage = null
+            clearFeatureResultHistory(state.superResState)
           } else {
             revokeImageRef(state.faceRestoreState.sourceImage)
             state.faceRestoreState.sourceImage = castDraft(next)
-            revokeImageRef(state.faceRestoreState.resultImage)
-            state.faceRestoreState.resultImage = null
+            clearFeatureResultHistory(state.faceRestoreState)
           }
         })
       },
@@ -1705,8 +1802,13 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
               : tab === WorkspaceTab.SUPER_RES
               ? state.superResState
               : state.faceRestoreState
-          revokeImageRef(target.resultImage)
-          target.resultImage = file ? castDraft(makeImageRef(file)) : null
+
+          if (!file) {
+            clearFeatureResultHistory(target)
+            return
+          }
+
+          pushFeatureResultHistory(target, file)
         })
       },
 

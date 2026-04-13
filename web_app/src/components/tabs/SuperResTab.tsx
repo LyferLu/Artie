@@ -1,11 +1,13 @@
 import { useState } from "react"
 import { useStore } from "@/lib/states"
-import { Button } from "../ui/button"
+import { Button, IconButton } from "../ui/button"
 import { Label } from "../ui/label"
 import {
   Loader2,
   Image as ImageIcon,
   Download,
+  Undo,
+  Redo,
 } from "lucide-react"
 import {
   Select,
@@ -26,6 +28,10 @@ const SuperResTab = () => {
     setFeatureSourceImage,
     setFeatureResultImage,
     setFeatureSelectedModel,
+    undoFeatureResult,
+    redoFeatureResult,
+    undoFeatureResultDisabled,
+    redoFeatureResultDisabled,
     clearCurrentWorkspace,
     currentWorkspaceSessionId,
   ] = useStore((state) => [
@@ -34,6 +40,10 @@ const SuperResTab = () => {
     state.setFeatureSourceImage,
     state.setFeatureResultImage,
     state.setFeatureSelectedModel,
+    state.undoFeatureResult,
+    state.redoFeatureResult,
+    state.undoFeatureResultDisabled,
+    state.redoFeatureResultDisabled,
     state.clearCurrentWorkspace,
     state.currentWorkspaceSessionId,
   ])
@@ -44,6 +54,8 @@ const SuperResTab = () => {
     superResState.selectedModel || serverConfig.realesrganModel || "realesr-general-x4v3"
   const sourceImage = superResState.sourceImage
   const resultImage = superResState.resultImage
+  const undoDisabled = undoFeatureResultDisabled(WorkspaceTab.SUPER_RES)
+  const redoDisabled = redoFeatureResultDisabled(WorkspaceTab.SUPER_RES)
 
   const handleFileUpload = (file: File) => {
     clearCurrentWorkspace()
@@ -134,17 +146,34 @@ const SuperResTab = () => {
         </div>
       )}
 
-      <div className="flex gap-2">
-        <Button className="flex-1 gap-2" onClick={handleUpscale} disabled={!sourceImage || isProcessing}>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button className="flex-1 gap-2 min-w-[220px]" onClick={handleUpscale} disabled={!sourceImage || isProcessing}>
           {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
           {isProcessing ? "处理中…" : "AI 提升分辨率 4x"}
         </Button>
-        {resultImage && (
-          <Button variant="outline" onClick={handleDownload} className="gap-2">
-            <Download className="h-4 w-4" />
-            下载
-          </Button>
-        )}
+        <div className="ml-auto flex items-center gap-2 rounded-[3rem] border px-2 py-1.5 backdrop-filter backdrop-blur-md bg-background/70">
+          <IconButton
+            tooltip="Undo"
+            onClick={() => undoFeatureResult(WorkspaceTab.SUPER_RES)}
+            disabled={undoDisabled}
+          >
+            <Undo />
+          </IconButton>
+          <IconButton
+            tooltip="Redo"
+            onClick={() => redoFeatureResult(WorkspaceTab.SUPER_RES)}
+            disabled={redoDisabled}
+          >
+            <Redo />
+          </IconButton>
+          <IconButton
+            tooltip="Download"
+            onClick={handleDownload}
+            disabled={!resultImage}
+          >
+            <Download />
+          </IconButton>
+        </div>
       </div>
     </div>
   )

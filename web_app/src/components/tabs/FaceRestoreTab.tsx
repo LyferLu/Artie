@@ -1,11 +1,13 @@
 import { useState } from "react"
 import { useStore } from "@/lib/states"
-import { Button } from "../ui/button"
+import { Button, IconButton } from "../ui/button"
 import { Label } from "../ui/label"
 import {
   Loader2,
   Image as ImageIcon,
   Download,
+  Undo,
+  Redo,
 } from "lucide-react"
 import { useToast } from "../ui/use-toast"
 import { PluginName, PluginInfo, WorkspaceTab } from "@/lib/types"
@@ -19,6 +21,10 @@ const FaceRestoreTab = () => {
     setFeatureSourceImage,
     setFeatureResultImage,
     setFeatureSelectedModel,
+    undoFeatureResult,
+    redoFeatureResult,
+    undoFeatureResultDisabled,
+    redoFeatureResultDisabled,
     clearCurrentWorkspace,
     currentWorkspaceSessionId,
   ] = useStore((state) => [
@@ -27,6 +33,10 @@ const FaceRestoreTab = () => {
     state.setFeatureSourceImage,
     state.setFeatureResultImage,
     state.setFeatureSelectedModel,
+    state.undoFeatureResult,
+    state.redoFeatureResult,
+    state.undoFeatureResultDisabled,
+    state.redoFeatureResultDisabled,
     state.clearCurrentWorkspace,
     state.currentWorkspaceSessionId,
   ])
@@ -37,6 +47,8 @@ const FaceRestoreTab = () => {
   const hasRestoreFormer = plugins.some((p: PluginInfo) => p.name === PluginName.RestoreFormer)
   const sourceImage = faceRestoreState.sourceImage
   const resultImage = faceRestoreState.resultImage
+  const undoDisabled = undoFeatureResultDisabled(WorkspaceTab.FACE_RESTORE)
+  const redoDisabled = redoFeatureResultDisabled(WorkspaceTab.FACE_RESTORE)
 
   const handleFileUpload = (file: File) => {
     clearCurrentWorkspace()
@@ -112,16 +124,16 @@ const FaceRestoreTab = () => {
         </div>
       )}
 
-      <div className="flex gap-2 flex-wrap">
+      <div className="flex flex-wrap items-center gap-3">
         {hasGFPGAN && (
-          <Button className="flex-1 gap-2" onClick={() => handleRestore(PluginName.GFPGAN)} disabled={!sourceImage || isProcessing}>
+          <Button className="flex-1 gap-2 min-w-[180px]" onClick={() => handleRestore(PluginName.GFPGAN)} disabled={!sourceImage || isProcessing}>
             {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
             {isProcessing ? "处理中…" : "GFPGAN"}
           </Button>
         )}
         {hasRestoreFormer && (
           <Button
-            className="flex-1 gap-2"
+            className="flex-1 gap-2 min-w-[180px]"
             variant="outline"
             onClick={() => handleRestore(PluginName.RestoreFormer)}
             disabled={!sourceImage || isProcessing}
@@ -130,12 +142,29 @@ const FaceRestoreTab = () => {
             {isProcessing ? "处理中…" : "RestoreFormer"}
           </Button>
         )}
-        {resultImage && (
-          <Button variant="ghost" onClick={handleDownload} className="gap-2">
-            <Download className="h-4 w-4" />
-            下载
-          </Button>
-        )}
+        <div className="ml-auto flex items-center gap-2 rounded-[3rem] border px-2 py-1.5 backdrop-filter backdrop-blur-md bg-background/70">
+          <IconButton
+            tooltip="Undo"
+            onClick={() => undoFeatureResult(WorkspaceTab.FACE_RESTORE)}
+            disabled={undoDisabled}
+          >
+            <Undo />
+          </IconButton>
+          <IconButton
+            tooltip="Redo"
+            onClick={() => redoFeatureResult(WorkspaceTab.FACE_RESTORE)}
+            disabled={redoDisabled}
+          >
+            <Redo />
+          </IconButton>
+          <IconButton
+            tooltip="Download"
+            onClick={handleDownload}
+            disabled={!resultImage}
+          >
+            <Download />
+          </IconButton>
+        </div>
       </div>
     </div>
   )
