@@ -86,7 +86,7 @@ const RemoveBGTab = () => {
   }
 
   return (
-    <div className="flex flex-col h-full w-full max-w-3xl mx-auto px-6 py-6 gap-6">
+    <div className="relative flex flex-col h-full w-full max-w-3xl mx-auto px-6 py-6 gap-6">
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5">
           <Label>模型</Label>
@@ -109,10 +109,9 @@ const RemoveBGTab = () => {
           </Select>
         </div>
 
-        {!sourceImage ? (
-          <ImageDropzone onSelection={handleFileUpload} />
-        ) : null}
       </div>
+
+      {!sourceImage ? <ImageDropzone floating onSelection={handleFileUpload} /> : null}
 
       {sourceImage && (
         <div className="grid grid-cols-2 gap-4">

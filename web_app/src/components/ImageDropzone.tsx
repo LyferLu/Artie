@@ -5,13 +5,15 @@ import { cn } from "@/lib/utils"
 type ImageDropzoneProps = {
   onSelection: (file: File) => void
   fullscreen?: boolean
+  floating?: boolean
   className?: string
 }
 
 export default function ImageDropzone(props: ImageDropzoneProps) {
-  const { onSelection, fullscreen = false, className } = props
+  const { onSelection, fullscreen = false, floating = false, className } = props
   const [uploadElemId] = useState(`file-upload-${Math.random().toString()}`)
   const resolution = useResolution()
+  const isFloating = fullscreen || floating
 
   function onFileSelected(file: File) {
     if (!file) {
@@ -38,7 +40,9 @@ export default function ImageDropzone(props: ImageDropzoneProps) {
       className={cn(
         fullscreen
           ? "absolute flex w-screen h-screen justify-center items-center pointer-events-none"
-          : "w-full",
+          : floating
+            ? "absolute inset-0 flex items-center justify-center pointer-events-none"
+            : "w-full",
         className
       )}
     >
@@ -46,8 +50,8 @@ export default function ImageDropzone(props: ImageDropzoneProps) {
         htmlFor={uploadElemId}
         className={cn(
           "grid bg-background border-[2px] border-[dashed] rounded-lg transition-colors hover:bg-primary hover:text-primary-foreground",
-          fullscreen
-            ? "min-w-[600px] pointer-events-auto"
+          isFloating
+            ? "w-[min(600px,calc(100%-3rem))] min-h-[280px] cursor-pointer pointer-events-auto"
             : "w-full min-h-[280px] cursor-pointer"
         )}
       >

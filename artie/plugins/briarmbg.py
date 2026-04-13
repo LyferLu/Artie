@@ -474,11 +474,19 @@ def create_briarmbg_session(local_files_only: bool = False):
     from huggingface_hub import hf_hub_download
 
     net = BriaRMBG()
-    model_path = hf_hub_download(
-        "briaai/RMBG-1.4",
-        "model.pth",
-        local_files_only=local_files_only,
-    )
+    try:
+        # Prefer an already cached file to avoid startup network checks.
+        model_path = hf_hub_download(
+            "briaai/RMBG-1.4",
+            "model.pth",
+            local_files_only=True,
+        )
+    except Exception:
+        model_path = hf_hub_download(
+            "briaai/RMBG-1.4",
+            "model.pth",
+            local_files_only=local_files_only,
+        )
     net.load_state_dict(torch.load(model_path, map_location="cpu"))
     net.eval()
     return net

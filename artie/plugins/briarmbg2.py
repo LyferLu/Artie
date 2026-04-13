@@ -2922,10 +2922,16 @@ class SimpleConvs(nn.Module):
 
 
 def create_briarmbg2_session(local_files_only: bool = False):
-    birefnet = BiRefNet.from_pretrained(
-        "briaai/RMBG-2.0",
-        local_files_only=local_files_only,
-    )
+    try:
+        birefnet = BiRefNet.from_pretrained(
+            "briaai/RMBG-2.0",
+            local_files_only=True,
+        )
+    except Exception:
+        birefnet = BiRefNet.from_pretrained(
+            "briaai/RMBG-2.0",
+            local_files_only=local_files_only,
+        )
     return birefnet
 
 

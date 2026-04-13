@@ -86,8 +86,8 @@ const FaceRestoreTab = () => {
   }
 
   return (
-    <div className="flex flex-col h-full w-full max-w-3xl mx-auto px-6 py-6 gap-6">
-      {!sourceImage ? <ImageDropzone onSelection={handleFileUpload} /> : null}
+    <div className="relative flex flex-col h-full w-full max-w-3xl mx-auto px-6 py-6 gap-6">
+      {!sourceImage ? <ImageDropzone floating onSelection={handleFileUpload} /> : null}
 
       {sourceImage && (
         <div className="grid grid-cols-2 gap-4">
