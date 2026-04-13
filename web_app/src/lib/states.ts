@@ -90,6 +90,10 @@ type GeneratedImage = {
   file?: File
 }
 
+type UpdateSettingsOptions = {
+  markDirty?: boolean
+}
+
 type FeatureResultTab =
   | WorkspaceTab.REMOVE_BG
   | WorkspaceTab.SUPER_RES
@@ -224,6 +228,7 @@ type AppState = {
   selectedGeneratedImageIndex: number
   isGenerating: boolean
   isCancelingTask: boolean
+  workspaceDirty: boolean
   // 全局工作图片，所有标签页共享
   workingImage: ImageRef | null
   removeBgState: FeatureResultState
@@ -269,13 +274,19 @@ type AppAction = {
   setExtenderHeight: (newValue: number) => void
 
   setIsCropperExtenderResizing: (newValue: boolean) => void
-  updateExtenderDirection: (newValue: ExtenderDirection) => void
+  updateExtenderDirection: (
+    newValue: ExtenderDirection,
+    options?: { markDirty?: boolean }
+  ) => void
   resetExtender: (width: number, height: number) => void
   updateExtenderByBuiltIn: (direction: ExtenderDirection, scale: number) => void
 
   setServerConfig: (newValue: ServerConfig) => void
   setSeed: (newValue: number) => void
-  updateSettings: (newSettings: Partial<Settings>) => void
+  updateSettings: (
+    newSettings: Partial<Settings>,
+    options?: UpdateSettingsOptions
+  ) => void
 
   // 互斥
   updateEnablePowerPaintV2: (newValue: boolean) => void
@@ -324,6 +335,11 @@ type AppAction = {
   setWorkingImage: (file: File) => void
   loadImageForTab: (file: File, tab: WorkspaceTab) => Promise<void>
   selectGeneratedImage: (index: number) => void
+  hasSavableWorkspaceContent: () => boolean
+  hasUnsavedWorkspaceChanges: () => boolean
+  markWorkspaceDirty: () => void
+  resetWorkspaceDirty: () => void
+  resetWorkspaceForNewGeneration: () => void
   setFeatureSourceImage: (tab: FeatureResultTab, file: File) => void
   setFeatureResultImage: (
     tab: FeatureResultTab,
@@ -338,7 +354,7 @@ type AppAction = {
   undoFeatureResultDisabled: (tab: FeatureResultTab) => boolean
   redoFeatureResultDisabled: (tab: FeatureResultTab) => boolean
   clearCurrentWorkspace: () => void
-  saveWorkspace: () => Promise<void>
+  saveWorkspace: () => Promise<boolean>
   fetchWorkspaces: (search?: string, feature?: string) => Promise<void>
   fetchWorkspaceDetail: (id: string) => Promise<void>
   resumeWorkspace: (id: string) => Promise<void>
@@ -511,8 +527,24 @@ const makeImageRef = (file: File): ImageRef => ({
   url: URL.createObjectURL(file),
 })
 
+const revokeGeneratedImages = (images: GeneratedImage[]) => {
+  images.forEach((image) => {
+    if (image.url) {
+      URL.revokeObjectURL(image.url)
+    }
+  })
+}
+
 const revokeImageRefs = (refs: ImageRef[]) => {
   refs.forEach((ref) => revokeImageRef(ref))
+}
+
+const clearFeatureResultState = (state: FeatureResultState) => {
+  revokeImageRef(state.sourceImage)
+  state.sourceImage = null
+  clearFeatureResultHistory(state)
+  state.selectedModel = undefined
+  state.selectedPlugin = undefined
 }
 
 const clearFeatureResultHistory = (state: FeatureResultState) => {
@@ -639,6 +671,7 @@ const defaultValues: AppState = {
   selectedGeneratedImageIndex: 0,
   isGenerating: false,
   isCancelingTask: false,
+  workspaceDirty: false,
   workingImage: null,
   removeBgState: createEmptyFeatureResultState(),
   superResState: createEmptyFeatureResultState(),
@@ -852,7 +885,10 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
               return
             }
             if (settings.model.name !== fixedTaskModelName) {
-              get().updateSettings({ model: fixedModelInfo })
+              get().updateSettings(
+                { model: fixedModelInfo },
+                { markDirty: false }
+              )
             }
           }
 
@@ -883,6 +919,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             extraMasks: [],
             prevExtraMasks: maskImages,
           })
+          get().markWorkspaceDirty()
         } catch (e: any) {
           toast({
             variant: "destructive",
@@ -938,6 +975,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
               state.editorState.extraMasks.push(castDraft(newMask))
             })
           }
+          get().markWorkspaceDirty()
           const end = new Date()
           const time = end.getTime() - start.getTime()
           toast({
@@ -974,6 +1012,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         lineGroup.push({ size: state.getBrushSize(), pts: [point] })
         set((state) => {
           state.editorState.curLineGroup = lineGroup
+          state.workspaceDirty = true
         })
       },
 
@@ -1117,6 +1156,36 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         set(() => newState)
       },
 
+      hasSavableWorkspaceContent: () => {
+        const state = get()
+        return (
+          state.generatedImages.length > 0 ||
+          !!state.file ||
+          !!state.removeBgState.sourceImage ||
+          !!state.removeBgState.resultImage ||
+          !!state.superResState.sourceImage ||
+          !!state.superResState.resultImage ||
+          !!state.faceRestoreState.sourceImage ||
+          !!state.faceRestoreState.resultImage
+        )
+      },
+
+      hasUnsavedWorkspaceChanges: () => {
+        return get().workspaceDirty
+      },
+
+      markWorkspaceDirty: () => {
+        set((state) => {
+          state.workspaceDirty = true
+        })
+      },
+
+      resetWorkspaceDirty: () => {
+        set((state) => {
+          state.workspaceDirty = false
+        })
+      },
+
       getBrushSize: (): number => {
         return (
           get().editorState.baseBrushSize * get().editorState.brushSizeScale
@@ -1145,7 +1214,10 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         })
       },
 
-      updateSettings: (newSettings: Partial<Settings>) => {
+      updateSettings: (
+        newSettings: Partial<Settings>,
+        options: UpdateSettingsOptions = {}
+      ) => {
         set((state) => {
           const merged = {
             ...state.settings,
@@ -1155,6 +1227,9 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.settingsByFeature[state.activeTab] = castDraft(
             cloneSettings(merged)
           )
+          if (options.markDirty !== false) {
+            state.workspaceDirty = true
+          }
         })
       },
 
@@ -1213,6 +1288,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.settingsByFeature[state.activeTab] = castDraft(
             cloneSettings(state.settings)
           )
+          state.workspaceDirty = true
         })
       },
 
@@ -1247,6 +1323,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             state.editorState.extraMasks.push(
               castDraft(state.interactiveSegState.tmpInteractiveSegMask)
             )
+            state.workspaceDirty = true
           }
           state.interactiveSegState = castDraft({
             ...defaultValues.interactiveSegState,
@@ -1260,6 +1337,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         await loadImage(newMask, URL.createObjectURL(blob))
         set((state) => {
           state.editorState.extraMasks.push(castDraft(newMask))
+          state.workspaceDirty = true
         })
         get().runInpainting()
       },
@@ -1283,6 +1361,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           )
           state.editorState = castDraft(defaultValues.editorState)
           state.cropperState = defaultValues.cropperState
+          state.workspaceDirty = true
         })
 
         if (
@@ -1295,10 +1374,13 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
               return
             }
             if (res.prompt) {
-              get().updateSettings({ prompt: res.prompt })
+              get().updateSettings({ prompt: res.prompt }, { markDirty: false })
             }
             if (res.negative_prompt) {
-              get().updateSettings({ negativePrompt: res.negative_prompt })
+              get().updateSettings(
+                { negativePrompt: res.negative_prompt },
+                { markDirty: false }
+              )
             }
           } catch (e: any) {
             toast({
@@ -1312,6 +1394,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
       setCustomFile: (file: File) =>
         set((state) => {
           state.customMask = file
+          state.workspaceDirty = true
         }),
 
       setBaseBrushSize: (newValue: number) =>
@@ -1393,7 +1476,10 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.isCropperExtenderResizing = newValue
         }),
 
-      updateExtenderDirection: (newValue: ExtenderDirection) => {
+      updateExtenderDirection: (
+        newValue: ExtenderDirection,
+        options: { markDirty?: boolean } = {}
+      ) => {
         console.log(
           `updateExtenderDirection: ${JSON.stringify(get().extenderState)}`
         )
@@ -1403,6 +1489,9 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.extenderState.y = 0
           state.extenderState.width = state.imageWidth
           state.extenderState.height = state.imageHeight
+          if (options.markDirty !== false) {
+            state.workspaceDirty = true
+          }
         })
         get().updateExtenderByBuiltIn(newValue, 1.5)
       },
@@ -1457,6 +1546,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         set((state) => {
           state.settings.seed = newValue
           state.settingsByFeature[state.activeTab].seed = newValue
+          state.workspaceDirty = true
         }),
 
       adjustMask: async (operate: AdjustMaskOperate) => {
@@ -1490,6 +1580,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         set((state) => {
           state.editorState.extraMasks = [castDraft(newMask)]
           state.editorState.curLineGroup = []
+          state.workspaceDirty = true
         })
 
         set((state) => {
@@ -1500,6 +1591,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         set((state) => {
           state.editorState.extraMasks = []
           state.editorState.curLineGroup = []
+          state.workspaceDirty = true
         })
       },
 
@@ -1679,13 +1771,18 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
 
       clearGeneratedImages: () => {
         set((state) => {
+          revokeGeneratedImages(state.generatedImages)
           state.generatedImages = []
           state.selectedGeneratedImageIndex = 0
+          state.workspaceDirty = true
         })
       },
 
       selectGeneratedImage: (index: number) => {
         set((state) => {
+          if (state.selectedGeneratedImageIndex !== index) {
+            state.workspaceDirty = true
+          }
           state.selectedGeneratedImageIndex = index
         })
 
@@ -1693,6 +1790,33 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         if (selected?.file) {
           get().setWorkingImage(selected.file)
         }
+      },
+
+      resetWorkspaceForNewGeneration: () => {
+        set((state) => {
+          revokeGeneratedImages(state.generatedImages)
+          revokeImageRef(state.workingImage)
+          clearFeatureResultState(state.removeBgState)
+          clearFeatureResultState(state.superResState)
+          clearFeatureResultState(state.faceRestoreState)
+
+          state.file = null
+          state.paintByExampleFile = null
+          state.customMask = null
+          state.imageHeight = 0
+          state.imageWidth = 0
+          state.editorState = castDraft(defaultValues.editorState)
+          state.interactiveSegState = castDraft(defaultValues.interactiveSegState)
+          state.cropperState = castDraft(defaultValues.cropperState)
+          state.extenderState = castDraft(defaultValues.extenderState)
+          state.isCropperExtenderResizing = false
+          state.generatedImages = []
+          state.selectedGeneratedImageIndex = 0
+          state.workingImage = null
+          state.currentWorkspaceSessionId = null
+          state.workspaceDetail = null
+          state.workspaceDirty = false
+        })
       },
 
       sendToTab: async (blobUrl: string, tab: WorkspaceTab) => {
@@ -1805,6 +1929,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             state.faceRestoreState.sourceImage = castDraft(next)
             clearFeatureResultHistory(state.faceRestoreState)
           }
+          state.workspaceDirty = true
         })
       },
 
@@ -1819,10 +1944,12 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
 
           if (!file) {
             clearFeatureResultHistory(target)
+            state.workspaceDirty = true
             return
           }
 
           pushFeatureResultHistory(target, file)
+          state.workspaceDirty = true
         })
       },
 
@@ -1835,6 +1962,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           } else {
             state.faceRestoreState.selectedPlugin = value
           }
+          state.workspaceDirty = true
         })
       },
 
@@ -1859,7 +1987,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             return
           }
           selectedModel = fallback
-          get().updateSettings({ model: fallback })
+          get().updateSettings({ model: fallback }, { markDirty: false })
         }
 
         set((state) => {
@@ -1896,6 +2024,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
                 file,
               })
               state.selectedGeneratedImageIndex = 0
+              state.workspaceDirty = true
             })
             get().setWorkingImage(file)
           }
@@ -1919,7 +2048,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             variant: "destructive",
             description: "请先登录后再保存到“我的作品”。",
           })
-          return
+          return false
         }
 
         set((state) => {
@@ -2049,16 +2178,19 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           set((draft) => {
             draft.currentWorkspaceSessionId = detail.session.id
             draft.workspaceDetail = detail
+            draft.workspaceDirty = false
           })
           await get().fetchWorkspaces()
           toast({
             description: "已保存到“我的作品”。",
           })
+          return true
         } catch (e: any) {
           toast({
             variant: "destructive",
             description: e.message ? e.message : e.toString(),
           })
+          return false
         } finally {
           set((state) => {
             state.isSavingWorkspace = false
@@ -2231,6 +2363,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         }
 
         get().setActiveTab(targetTab)
+        get().resetWorkspaceDirty()
       },
 
       importFileToWorkspace: async (file: File, title?: string) => {
@@ -2312,6 +2445,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.workspaceItems = []
           state.workspaceDetail = null
           state.currentWorkspaceSessionId = null
+          state.workspaceDirty = false
         })
       },
 

@@ -4,7 +4,16 @@ import { Button } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { Slider } from "../ui/slider"
 import { Label } from "../ui/label"
-import { WorkspaceTab } from "@/lib/types"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../ui/alert-dialog"
 import {
   ArrowLeftRight,
   ChevronDown,
@@ -12,10 +21,6 @@ import {
   Loader2,
   Trash2,
   Wand2,
-  Edit2,
-  Zap,
-  Scissors,
-  Smile,
   Download,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -35,7 +40,6 @@ import {
   RESOLUTION_PRESETS,
 } from "@/lib/const"
 import { switchModel } from "@/lib/api"
-import { PluginName } from "@/lib/types"
 
 const SDXL_TYPES = [MODEL_TYPE_DIFFUSERS_SDXL, MODEL_TYPE_DIFFUSERS_SDXL_INPAINT]
 const SD_TYPES = [MODEL_TYPE_DIFFUSERS_SD, MODEL_TYPE_DIFFUSERS_SD_INPAINT]
@@ -47,10 +51,14 @@ const GenerateTab = () => {
     generatedImages,
     selectedGeneratedImageIndex,
     isGenerating,
+    isSavingWorkspace,
     updateSettings,
     runTxt2Img,
+    saveWorkspace,
+    hasSavableWorkspaceContent,
+    hasUnsavedWorkspaceChanges,
+    resetWorkspaceForNewGeneration,
     clearGeneratedImages,
-    sendToTab,
     selectGeneratedImage,
   ] = useStore((state) => [
     state.settings,
@@ -58,23 +66,28 @@ const GenerateTab = () => {
     state.generatedImages,
     state.selectedGeneratedImageIndex,
     state.isGenerating,
+    state.isSavingWorkspace,
     state.updateSettings,
     state.runTxt2Img,
+    state.saveWorkspace,
+    state.hasSavableWorkspaceContent,
+    state.hasUnsavedWorkspaceChanges,
+    state.resetWorkspaceForNewGeneration,
     state.clearGeneratedImages,
-    state.sendToTab,
     state.selectGeneratedImage,
   ])
 
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const [isSwitchingModel, setIsSwitchingModel] = useState(false)
   const [showRecommended, setShowRecommended] = useState(false)
+  const [showGenerateConfirm, setShowGenerateConfirm] = useState(false)
 
   // 刷新后直接进入文生图 tab 时，确保前端选中的模型支持 txt2img。
   useEffect(() => {
     if (!settings.model.support_txt2img) {
       const fallback = serverConfig.modelInfos.find((m) => m.support_txt2img)
       if (fallback) {
-        updateSettings({ model: fallback })
+        updateSettings({ model: fallback }, { markDirty: false })
       }
     }
   }, [serverConfig.modelInfos, settings.model.support_txt2img, updateSettings])
@@ -104,14 +117,39 @@ const GenerateTab = () => {
   }, [settings.model.model_type])
 
   const handleGenerate = useCallback(() => {
-    if (!isDisabled && settings.prompt.trim()) {
-      runTxt2Img()
+    if (isDisabled || !settings.prompt.trim()) {
+      return
     }
-  }, [isDisabled, settings.prompt, runTxt2Img])
 
-  const handleEditImage = async (url: string) => {
-    await sendToTab(url, WorkspaceTab.INPAINT)
-  }
+    if (hasSavableWorkspaceContent() && hasUnsavedWorkspaceChanges()) {
+      setShowGenerateConfirm(true)
+      return
+    }
+
+    runTxt2Img()
+  }, [
+    hasSavableWorkspaceContent,
+    hasUnsavedWorkspaceChanges,
+    isDisabled,
+    settings.prompt,
+    runTxt2Img,
+  ])
+
+  const handleSaveAndGenerate = useCallback(async () => {
+    const saved = await saveWorkspace()
+    if (!saved) {
+      return
+    }
+
+    setShowGenerateConfirm(false)
+    runTxt2Img()
+  }, [runTxt2Img, saveWorkspace])
+
+  const handleGenerateWithoutSaving = useCallback(() => {
+    resetWorkspaceForNewGeneration()
+    setShowGenerateConfirm(false)
+    runTxt2Img()
+  }, [resetWorkspaceForNewGeneration, runTxt2Img])
 
   const handleSwitchModel = async (name: string) => {
     if (isSwitchingModel || isGenerating) return
@@ -153,12 +191,6 @@ const GenerateTab = () => {
   // Downloaded model names for recommended section
   const downloadedNames = new Set(serverConfig.modelInfos.map((m) => m.name))
 
-  const hasRemoveBG = serverConfig.plugins.some((p) => p.name === PluginName.RemoveBG)
-  const hasRealESRGAN = serverConfig.plugins.some((p) => p.name === PluginName.RealESRGAN)
-  const hasFaceRestore = serverConfig.plugins.some(
-    (p) => p.name === PluginName.GFPGAN || p.name === PluginName.RestoreFormer
-  )
-
   const handleDownloadImage = (url: string, idx: number) => {
     const a = document.createElement("a")
     a.href = url
@@ -167,24 +199,56 @@ const GenerateTab = () => {
   }
 
   return (
-    <div className="flex flex-col h-full w-full max-w-3xl mx-auto px-6 py-6 gap-5">
-      {/* Model display */}
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-muted-foreground">当前模型:</span>
-        {isSwitchingModel ? (
-          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            切换中…
-          </span>
-        ) : (
-          <span className="text-xs font-medium truncate max-w-[240px]" title={settings.model.name}>
-            {settings.model.name.split("/").pop()}
-          </span>
-        )}
-      </div>
+    <>
+      <AlertDialog open={showGenerateConfirm} onOpenChange={setShowGenerateConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>检测到未保存的图片或工作进度</AlertDialogTitle>
+            <AlertDialogDescription>
+              是否先保存之前的图片和工作进度，再开始新的生成？
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSavingWorkspace}>
+              取消
+            </AlertDialogCancel>
+            <AlertDialogCancel
+              disabled={isSavingWorkspace}
+              onClick={handleGenerateWithoutSaving}
+            >
+              不保存直接生成
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isSavingWorkspace}
+              onClick={(ev) => {
+                ev.preventDefault()
+                void handleSaveAndGenerate()
+              }}
+            >
+              {isSavingWorkspace ? "保存中…" : "保存后生成"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-      {/* Prompt inputs */}
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col h-full w-full max-w-3xl mx-auto px-6 py-6 gap-5">
+        {/* Model display */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">当前模型:</span>
+          {isSwitchingModel ? (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              切换中…
+            </span>
+          ) : (
+            <span className="text-xs font-medium truncate max-w-[240px]" title={settings.model.name}>
+              {settings.model.name.split("/").pop()}
+            </span>
+          )}
+        </div>
+
+        {/* Prompt inputs */}
+        <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="gen-prompt">Prompt</Label>
           <Textarea
@@ -223,10 +287,10 @@ const GenerateTab = () => {
             }}
           />
         </div>
-      </div>
+        </div>
 
-      {/* Resolution */}
-      <div className="flex flex-col gap-2">
+        {/* Resolution */}
+        <div className="flex flex-col gap-2">
         <Label>分辨率</Label>
         <div className="flex gap-2 items-center">
           {/* Preset dropdown */}
@@ -306,10 +370,10 @@ const GenerateTab = () => {
             SDXL 建议分辨率至少 768×768，低分辨率可能影响生成质量
           </p>
         )}
-      </div>
+        </div>
 
-      {/* Settings row */}
-      <div className="grid grid-cols-2 gap-4">
+        {/* Settings row */}
+        <div className="grid grid-cols-2 gap-4">
         <div className="flex flex-col gap-1.5">
           <Label>Steps: {settings.sdSteps}</Label>
           <Slider
@@ -372,24 +436,24 @@ const GenerateTab = () => {
             placeholder="-1 (随机)"
           />
         </div>
-      </div>
+        </div>
 
-      {/* Generate button */}
-      <Button
-        className="w-full gap-2"
-        onClick={handleGenerate}
-        disabled={isDisabled || !settings.prompt.trim()}
-      >
-        {isGenerating ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : (
-          <Wand2 className="h-4 w-4" />
-        )}
-        {isGenerating ? "生成中…" : "生成 (Ctrl+Enter)"}
-      </Button>
+        {/* Generate button */}
+        <Button
+          className="w-full gap-2"
+          onClick={handleGenerate}
+          disabled={isDisabled || isSavingWorkspace || !settings.prompt.trim()}
+        >
+          {isGenerating ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Wand2 className="h-4 w-4" />
+          )}
+          {isGenerating ? "生成中…" : "生成 (Ctrl+Enter)"}
+        </Button>
 
-      {/* Recommended models section */}
-      <div className="flex flex-col gap-2">
+        {/* Recommended models section */}
+        <div className="flex flex-col gap-2">
         <button
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors w-fit"
           onClick={() => setShowRecommended((v) => !v)}
@@ -454,11 +518,11 @@ const GenerateTab = () => {
             })}
           </div>
         )}
-      </div>
+        </div>
 
-      {/* Generated images gallery */}
-      {generatedImages.length > 0 && (
-        <div className="flex flex-col gap-3">
+        {/* Generated images gallery */}
+        {generatedImages.length > 0 && (
+          <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <Label className="text-sm text-muted-foreground">
               已生成 ({generatedImages.length})
@@ -507,56 +571,6 @@ const GenerateTab = () => {
                   <div className="flex flex-wrap gap-1.5 px-3 pb-3">
                     <Button
                       size="sm"
-                      variant="secondary"
-                      className="gap-1.5 text-xs h-7"
-                      onClick={() => handleEditImage(img.url)}
-                      title="在 AI 擦除画布中打开"
-                    >
-                      <Edit2 className="h-3 w-3" />
-                      AI 擦除
-                    </Button>
-
-                    {hasRealESRGAN && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        className="gap-1.5 text-xs h-7"
-                        onClick={() => sendToTab(img.url, WorkspaceTab.SUPER_RES)}
-                        title="AI 提升分辨率"
-                      >
-                        <Zap className="h-3 w-3" />
-                        AI 超分
-                      </Button>
-                    )}
-
-                    {hasRemoveBG && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        className="gap-1.5 text-xs h-7"
-                        onClick={() => sendToTab(img.url, WorkspaceTab.REMOVE_BG)}
-                        title="AI 去除背景"
-                      >
-                        <Scissors className="h-3 w-3" />
-                        AI 去背景
-                      </Button>
-                    )}
-
-                    {hasFaceRestore && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        className="gap-1.5 text-xs h-7"
-                        onClick={() => sendToTab(img.url, WorkspaceTab.FACE_RESTORE)}
-                        title="AI 修复人脸"
-                      >
-                        <Smile className="h-3 w-3" />
-                        AI 修复人脸
-                      </Button>
-                    )}
-
-                    <Button
-                      size="sm"
                       variant="ghost"
                       className="gap-1.5 text-xs h-7 ml-auto text-muted-foreground"
                       onClick={() => handleDownloadImage(img.url, idx)}
@@ -570,9 +584,10 @@ const GenerateTab = () => {
               )
             })}
           </div>
-        </div>
-      )}
-    </div>
+          </div>
+        )}
+      </div>
+    </>
   )
 }
 

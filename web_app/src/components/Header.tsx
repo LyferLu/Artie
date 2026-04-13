@@ -29,11 +29,8 @@ const Header = () => {
     user,
     isAuthenticated,
     activeTab,
-    generatedImages,
-    removeBgState,
-    superResState,
-    faceRestoreState,
     isSavingWorkspace,
+    hasSavableWorkspaceContent,
     loadImageForTab,
     setCustomFile,
     runInpainting,
@@ -57,11 +54,8 @@ const Header = () => {
     state.user,
     state.isAuthenticated,
     state.activeTab,
-    state.generatedImages,
-    state.removeBgState,
-    state.superResState,
-    state.faceRestoreState,
     state.isSavingWorkspace,
+    state.hasSavableWorkspaceContent,
     state.loadImageForTab,
     state.setCustomFile,
     state.runInpainting,
@@ -100,18 +94,7 @@ const Header = () => {
   const canSaveWorkspace =
     isAuthenticated &&
     activeTab !== WorkspaceTab.MY_WORKSPACE &&
-    ((activeTab === WorkspaceTab.GENERATE && generatedImages.length > 0) ||
-      ((activeTab === WorkspaceTab.INPAINT ||
-        activeTab === WorkspaceTab.OUTPAINT ||
-        activeTab === WorkspaceTab.AI_REPAINT ||
-        activeTab === WorkspaceTab.INTERACTIVE_SEG) &&
-        !!file) ||
-      (activeTab === WorkspaceTab.REMOVE_BG &&
-        (!!removeBgState.sourceImage || !!removeBgState.resultImage)) ||
-      (activeTab === WorkspaceTab.SUPER_RES &&
-        (!!superResState.sourceImage || !!superResState.resultImage)) ||
-      (activeTab === WorkspaceTab.FACE_RESTORE &&
-        (!!faceRestoreState.sourceImage || !!faceRestoreState.resultImage)))
+    hasSavableWorkspaceContent()
 
   const handleOnPhotoClick = async (tab: string, filename: string) => {
     try {

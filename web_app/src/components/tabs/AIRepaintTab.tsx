@@ -27,13 +27,13 @@ const AIRepaintTab = () => {
   ])
 
   useEffect(() => {
-    updateSettings({ showExtender: false })
+    updateSettings({ showExtender: false }, { markDirty: false })
 
     const repaintModel = serverConfig.modelInfos.find(
       (m) => m.name === AI_REPAINT_MODEL
     )
     if (repaintModel && repaintModel.name !== settings.model.name) {
-      updateSettings({ model: repaintModel })
+      updateSettings({ model: repaintModel }, { markDirty: false })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

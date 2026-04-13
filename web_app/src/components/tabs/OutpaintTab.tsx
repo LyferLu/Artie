@@ -19,14 +19,14 @@ const OutpaintTab = () => {
 
   // Automatically enable extender when switching to this tab
   useEffect(() => {
-    updateSettings({ showExtender: true })
-    updateExtenderDirection(ExtenderDirection.xy)
+    updateSettings({ showExtender: true }, { markDirty: false })
+    updateExtenderDirection(ExtenderDirection.xy, { markDirty: false })
     // 刷新后直接进入该 tab 时，只更新前端模型元数据，不触发后端切模
     const outpaintModel = serverConfig.modelInfos.find(
       (m) => m.name === OUTPAINT_MODEL
     )
     if (outpaintModel && outpaintModel.name !== settings.model.name) {
-      updateSettings({ model: outpaintModel })
+      updateSettings({ model: outpaintModel }, { markDirty: false })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
