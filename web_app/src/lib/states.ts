@@ -226,6 +226,7 @@ type AppState = {
   activeTab: WorkspaceTab
   generatedImages: GeneratedImage[]
   selectedGeneratedImageIndex: number
+  pendingGeneratedHandoff: boolean
   isGenerating: boolean
   isCancelingTask: boolean
   workspaceDirty: boolean
@@ -592,8 +593,6 @@ const FEATURE_RESULT_TABS = [
   WorkspaceTab.FACE_RESTORE,
 ]
 
-const GENERATE_SOURCE_TABS = [WorkspaceTab.GENERATE]
-
 const defaultValues: AppState = {
   file: null,
   paintByExampleFile: null,
@@ -676,6 +675,7 @@ const defaultValues: AppState = {
   activeTab: WorkspaceTab.INPAINT,
   generatedImages: [],
   selectedGeneratedImageIndex: 0,
+  pendingGeneratedHandoff: false,
   isGenerating: false,
   isCancelingTask: false,
   workspaceDirty: false,
@@ -1607,13 +1607,17 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
 
       setActiveTab: (tab: WorkspaceTab) => {
         const prevTab = get().activeTab
+        const canSyncFromGenerate =
+          prevTab === WorkspaceTab.GENERATE && get().pendingGeneratedHandoff
         const shouldSyncToFeatureTab =
-          prevTab !== tab && FEATURE_RESULT_TABS.includes(tab)
+          prevTab !== tab &&
+          FEATURE_RESULT_TABS.includes(tab) &&
+          (prevTab !== WorkspaceTab.GENERATE || canSyncFromGenerate)
         const shouldSyncToEditorTab =
           prevTab !== tab &&
           EDITOR_TABS.includes(tab) &&
           (FEATURE_RESULT_TABS.includes(prevTab) ||
-            GENERATE_SOURCE_TABS.includes(prevTab))
+            canSyncFromGenerate)
         const shouldSyncImageOnTabSwitch =
           shouldSyncToFeatureTab || shouldSyncToEditorTab
 
@@ -1710,7 +1714,13 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
               if (!sourceFile) {
                 return
               }
-              return get().loadImageForTab(sourceFile, tab)
+              return get().loadImageForTab(sourceFile, tab).then(() => {
+                if (canSyncFromGenerate) {
+                  set((state) => {
+                    state.pendingGeneratedHandoff = false
+                  })
+                }
+              })
             })
             .catch(console.error)
         }
@@ -1784,6 +1794,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           revokeGeneratedImages(state.generatedImages)
           state.generatedImages = []
           state.selectedGeneratedImageIndex = 0
+          state.pendingGeneratedHandoff = false
           state.workspaceDirty = true
         })
       },
@@ -1822,6 +1833,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.isCropperExtenderResizing = false
           state.generatedImages = []
           state.selectedGeneratedImageIndex = 0
+          state.pendingGeneratedHandoff = false
           state.showReplaceImageConfirm = false
           state.pendingReplaceImage = null
           state.pendingReplaceTab = null
@@ -2088,6 +2100,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
                 file,
               })
               state.selectedGeneratedImageIndex = 0
+              state.pendingGeneratedHandoff = true
               state.workspaceDirty = true
             })
             get().setWorkingImage(file)
@@ -2400,6 +2413,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           }
           state.generatedImages = []
           state.selectedGeneratedImageIndex = 0
+          state.pendingGeneratedHandoff = false
           state.removeBgState = castDraft(createEmptyFeatureResultState())
           state.superResState = castDraft(createEmptyFeatureResultState())
           state.faceRestoreState = castDraft(createEmptyFeatureResultState())
@@ -2450,6 +2464,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             set((state) => {
               state.generatedImages = [{ url: imageRef.url, seed: "", file }]
               state.selectedGeneratedImageIndex = 0
+              state.pendingGeneratedHandoff = false
               revokeImageRef(state.workingImage)
               state.workingImage = castDraft(imageRef)
               state.file = null
