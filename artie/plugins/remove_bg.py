@@ -20,10 +20,11 @@ class RemoveBG(BasePlugin):
     support_gen_mask = True
     support_gen_image = True
 
-    def __init__(self, model_name, device):
+    def __init__(self, model_name, device, local_files_only: bool = False):
         super().__init__()
         self.model_name = model_name
         self.device = device
+        self.local_files_only = local_files_only
 
         if model_name.startswith("birefnet"):
             import rembg
@@ -48,7 +49,9 @@ class RemoveBG(BasePlugin):
                 briarmbg_process,
             )
 
-            self.session = create_briarmbg_session().to(self.device)
+            self.session = create_briarmbg_session(
+                local_files_only=self.local_files_only
+            ).to(self.device)
             self.remove = briarmbg_process
         elif model_name == RemoveBGModel.briaai_rmbg_2_0:
             from artie.plugins.briarmbg2 import (
@@ -56,7 +59,9 @@ class RemoveBG(BasePlugin):
                 briarmbg2_process,
             )
 
-            self.session = create_briarmbg2_session().to(self.device)
+            self.session = create_briarmbg2_session(
+                local_files_only=self.local_files_only
+            ).to(self.device)
             self.remove = briarmbg2_process
         else:
             from rembg import new_session

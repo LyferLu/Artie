@@ -1,8 +1,7 @@
 import { useState } from "react"
 import { useStore } from "@/lib/states"
-import { Button } from "../ui/button"
+import { Button, ImageUploadButton } from "../ui/button"
 import { Label } from "../ui/label"
-import { ImageUploadButton } from "../ui/button"
 import { Loader2, Image as ImageIcon, Download, Pencil, Scissors, Smile } from "lucide-react"
 import {
   Select,
@@ -16,32 +15,55 @@ import { PluginName, WorkspaceTab } from "@/lib/types"
 import { runPlugin, switchPluginModel } from "@/lib/api"
 
 const SuperResTab = () => {
-  const [serverConfig, workingImage, setWorkingImage, sendToTab] = useStore((state) => [
+  const [
+    serverConfig,
+    superResState,
+    setFeatureSourceImage,
+    setFeatureResultImage,
+    setFeatureSelectedModel,
+    sendToTab,
+    clearCurrentWorkspace,
+    currentWorkspaceSessionId,
+  ] = useStore((state) => [
     state.serverConfig,
-    state.workingImage,
-    state.setWorkingImage,
+    state.superResState,
+    state.setFeatureSourceImage,
+    state.setFeatureResultImage,
+    state.setFeatureSelectedModel,
     state.sendToTab,
+    state.clearCurrentWorkspace,
+    state.currentWorkspaceSessionId,
   ])
   const { toast } = useToast()
-
-  const [selectedModel, setSelectedModel] = useState(
-    serverConfig.realesrganModel || "realesr-general-x4v3"
-  )
-  const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
 
+  const selectedModel =
+    superResState.selectedModel || serverConfig.realesrganModel || "realesr-general-x4v3"
+  const sourceImage = superResState.sourceImage
+  const resultImage = superResState.resultImage
+
   const handleFileUpload = (file: File) => {
-    setWorkingImage(file)
-    setResultUrl(null)
+    clearCurrentWorkspace()
+    setFeatureSourceImage(WorkspaceTab.SUPER_RES, file)
+    setFeatureSelectedModel(WorkspaceTab.SUPER_RES, selectedModel)
   }
 
   const handleUpscale = async () => {
-    if (!workingImage) return
+    if (!sourceImage) return
     setIsProcessing(true)
     try {
       await switchPluginModel(PluginName.RealESRGAN, selectedModel)
-      const res = await runPlugin(false, PluginName.RealESRGAN, workingImage.file, 4)
-      setResultUrl(res.blob)
+      const res = await runPlugin(
+        false,
+        PluginName.RealESRGAN,
+        sourceImage.file,
+        4,
+        undefined,
+        currentWorkspaceSessionId ?? undefined
+      )
+      const blob = await fetch(res.blob).then((r) => r.blob())
+      const file = new File([blob], "upscaled.png", { type: blob.type || "image/png" })
+      setFeatureResultImage(WorkspaceTab.SUPER_RES, file)
     } catch (e: any) {
       toast({
         variant: "destructive",
@@ -53,9 +75,9 @@ const SuperResTab = () => {
   }
 
   const handleDownload = () => {
-    if (!resultUrl) return
+    if (!resultImage) return
     const a = document.createElement("a")
-    a.href = resultUrl
+    a.href = resultImage.url
     a.download = "upscaled.png"
     a.click()
   }
@@ -70,7 +92,10 @@ const SuperResTab = () => {
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5">
           <Label>模型</Label>
-          <Select value={selectedModel} onValueChange={setSelectedModel}>
+          <Select
+            value={selectedModel}
+            onValueChange={(value) => setFeatureSelectedModel(WorkspaceTab.SUPER_RES, value)}
+          >
             <SelectTrigger className="h-8 text-sm">
               <SelectValue />
             </SelectTrigger>
@@ -90,12 +115,12 @@ const SuperResTab = () => {
         </ImageUploadButton>
       </div>
 
-      {workingImage && (
+      {sourceImage && (
         <div className="grid grid-cols-2 gap-4">
           <div className="flex flex-col gap-1.5">
             <Label className="text-sm text-muted-foreground">原图</Label>
             <img
-              src={workingImage.url}
+              src={sourceImage.url}
               alt="Source"
               className="rounded-lg border border-border object-contain max-h-[400px]"
             />
@@ -103,8 +128,8 @@ const SuperResTab = () => {
           <div className="flex flex-col gap-1.5">
             <Label className="text-sm text-muted-foreground">放大结果 (4x)</Label>
             <div className="rounded-lg border border-border bg-muted/30 flex items-center justify-center min-h-[200px]">
-              {resultUrl ? (
-                <img src={resultUrl} alt="Result" className="max-h-[400px] object-contain" />
+              {resultImage ? (
+                <img src={resultImage.url} alt="Result" className="max-h-[400px] object-contain" />
               ) : (
                 <span className="text-muted-foreground text-sm">结果将显示在此处</span>
               )}
@@ -114,19 +139,11 @@ const SuperResTab = () => {
       )}
 
       <div className="flex gap-2">
-        <Button
-          className="flex-1 gap-2"
-          onClick={handleUpscale}
-          disabled={!workingImage || isProcessing}
-        >
-          {isProcessing ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <ImageIcon className="h-4 w-4" />
-          )}
+        <Button className="flex-1 gap-2" onClick={handleUpscale} disabled={!sourceImage || isProcessing}>
+          {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
           {isProcessing ? "处理中…" : "AI 提升分辨率 4x"}
         </Button>
-        {resultUrl && (
+        {resultImage && (
           <Button variant="outline" onClick={handleDownload} className="gap-2">
             <Download className="h-4 w-4" />
             下载
@@ -134,7 +151,7 @@ const SuperResTab = () => {
         )}
       </div>
 
-      {resultUrl && (
+      {resultImage && (
         <div className="flex flex-col gap-2">
           <Label className="text-sm text-muted-foreground">发送结果到</Label>
           <div className="flex gap-2 flex-wrap">
@@ -142,7 +159,7 @@ const SuperResTab = () => {
               size="sm"
               variant="secondary"
               className="gap-1.5 text-xs h-7"
-              onClick={() => sendToTab(resultUrl, WorkspaceTab.INPAINT)}
+              onClick={() => sendToTab(resultImage.url, WorkspaceTab.INPAINT)}
             >
               <Pencil className="h-3 w-3" />
               AI 修复
@@ -152,7 +169,7 @@ const SuperResTab = () => {
                 size="sm"
                 variant="secondary"
                 className="gap-1.5 text-xs h-7"
-                onClick={() => sendToTab(resultUrl, WorkspaceTab.REMOVE_BG)}
+                onClick={() => sendToTab(resultImage.url, WorkspaceTab.REMOVE_BG)}
               >
                 <Scissors className="h-3 w-3" />
                 AI 去背景
@@ -163,7 +180,7 @@ const SuperResTab = () => {
                 size="sm"
                 variant="secondary"
                 className="gap-1.5 text-xs h-7"
-                onClick={() => sendToTab(resultUrl, WorkspaceTab.FACE_RESTORE)}
+                onClick={() => sendToTab(resultImage.url, WorkspaceTab.FACE_RESTORE)}
               >
                 <Smile className="h-3 w-3" />
                 AI 修复人脸

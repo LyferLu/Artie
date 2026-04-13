@@ -1,251 +1,252 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useStore } from "@/lib/states"
-import { Button } from "../ui/button"
+import { Button, ImageUploadButton } from "../ui/button"
 import { Input } from "../ui/input"
-import { Loader2, Plus, Trash2, Edit2, FolderOpen, Image as ImageIcon } from "lucide-react"
+import { Loader2, Upload, FolderOpen, Play, Trash2, Clock3 } from "lucide-react"
 import { useToast } from "../ui/use-toast"
-import { WorkspaceTab } from "@/lib/types"
-import { getImageFileUrl } from "@/lib/api"
+import { getAssetFileUrl } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
-const IMAGE_TYPE_LABELS: Record<string, string> = {
-  all: "全部",
-  generated: "文生图",
-  inpainted: "修复",
-  enhanced: "增强",
-  uploaded: "上传",
-}
-
-const WorkspaceContent = () => {
+const MyWorkspaceTab = () => {
   const { toast } = useToast()
   const [
-    projects,
-    currentProject,
-    projectImages,
-    isLoadingProjects,
-    isLoadingImages,
-    fetchProjects,
-    createUserProject,
-    deleteUserProject,
-    setCurrentProject,
-    fetchProjectImages,
-    deleteUserImage,
-    setActiveTab,
-    setFile,
+    workspaceItems,
+    workspaceDetail,
+    isLoadingWorkspaces,
+    isLoadingWorkspaceDetail,
+    fetchWorkspaces,
+    fetchWorkspaceDetail,
+    resumeWorkspace,
+    deleteWorkspaceItem,
+    importFileToWorkspace,
   ] = useStore((state) => [
-    state.projects,
-    state.currentProject,
-    state.projectImages,
-    state.isLoadingProjects,
-    state.isLoadingImages,
-    state.fetchProjects,
-    state.createUserProject,
-    state.deleteUserProject,
-    state.setCurrentProject,
-    state.fetchProjectImages,
-    state.deleteUserImage,
-    state.setActiveTab,
-    state.setFile,
+    state.workspaceItems,
+    state.workspaceDetail,
+    state.isLoadingWorkspaces,
+    state.isLoadingWorkspaceDetail,
+    state.fetchWorkspaces,
+    state.fetchWorkspaceDetail,
+    state.resumeWorkspace,
+    state.deleteWorkspaceItem,
+    state.importFileToWorkspace,
   ])
 
-  const [newProjectName, setNewProjectName] = useState("")
-  const [filterType, setFilterType] = useState<string | undefined>(undefined)
+  const [search, setSearch] = useState("")
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchProjects()
-  }, [])
+    fetchWorkspaces()
+  }, [fetchWorkspaces])
 
   useEffect(() => {
-    if (currentProject) {
-      fetchProjectImages(currentProject.id, filterType)
-    } else {
-      fetchProjectImages(undefined, filterType)
+    if (selectedId) {
+      fetchWorkspaceDetail(selectedId)
     }
-  }, [currentProject, filterType])
+  }, [fetchWorkspaceDetail, selectedId])
 
-  const handleCreateProject = async () => {
-    if (!newProjectName.trim()) return
+  const items = useMemo(() => {
+    if (!search.trim()) return workspaceItems
+    const text = search.trim().toLowerCase()
+    return workspaceItems.filter((item) => item.title.toLowerCase().includes(text))
+  }, [search, workspaceItems])
+
+  const handleOpen = async (id: string) => {
     try {
-      await createUserProject(newProjectName.trim())
-      setNewProjectName("")
+      await resumeWorkspace(id)
     } catch (e: any) {
-      toast({ variant: "destructive", description: e.message })
+      toast({
+        variant: "destructive",
+        description: e.message ? e.message : e.toString(),
+      })
     }
   }
 
-  const handleDeleteProject = async (id: string) => {
+  const handleDelete = async (id: string) => {
     try {
-      await deleteUserProject(id)
+      await deleteWorkspaceItem(id)
+      if (selectedId === id) {
+        setSelectedId(null)
+      }
     } catch (e: any) {
-      toast({ variant: "destructive", description: e.message })
-    }
-  }
-
-  const handleEditImage = async (imageId: string) => {
-    try {
-      const url = getImageFileUrl(imageId)
-      const res = await fetch(url)
-      const blob = await res.blob()
-      const file = new File([blob], `image_${imageId}.png`, { type: "image/png" })
-      await setFile(file)
-      setActiveTab(WorkspaceTab.INPAINT)
-    } catch {
-      toast({ variant: "destructive", description: "加载图片失败，请重试" })
-    }
-  }
-
-  const handleDeleteImage = async (id: string) => {
-    try {
-      await deleteUserImage(id)
-    } catch (e: any) {
-      toast({ variant: "destructive", description: e.message })
+      toast({
+        variant: "destructive",
+        description: e.message ? e.message : e.toString(),
+      })
     }
   }
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* 左侧：项目列表 */}
-      <div className="w-56 border-r border-border flex flex-col gap-2 p-3 overflow-y-auto shrink-0">
-        <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide px-1">项目</div>
-        <div className="flex gap-1">
+      <div className="w-[360px] border-r border-border flex flex-col">
+        <div className="p-4 border-b border-border flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <FolderOpen className="h-4 w-4 text-muted-foreground" />
+            <div className="text-sm font-medium">我的作品</div>
+          </div>
           <Input
-            value={newProjectName}
-            onChange={(e) => setNewProjectName(e.target.value)}
-            placeholder="新建项目…"
-            className="h-7 text-xs"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreateProject()
-            }}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索保存的工作…"
           />
-          <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={handleCreateProject}>
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-
-        <button
-          className={cn(
-            "flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors text-left",
-            !currentProject ? "bg-accent" : "hover:bg-accent/50"
-          )}
-          onClick={() => setCurrentProject(null)}
-        >
-          <FolderOpen className="h-4 w-4 shrink-0" />
-          <span className="truncate">所有图片</span>
-        </button>
-
-        {isLoadingProjects ? (
-          <div className="flex justify-center py-2">
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-          </div>
-        ) : (
-          projects.map((p) => (
-            <div
-              key={p.id}
-              className={cn(
-                "group flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors cursor-pointer",
-                currentProject?.id === p.id ? "bg-accent" : "hover:bg-accent/50"
-              )}
-              onClick={() => setCurrentProject(p)}
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => fetchWorkspaces(search)}>
+              刷新
+            </Button>
+            <ImageUploadButton
+              tooltip="上传图片并创建工作"
+              onFileUpload={(file) => void importFileToWorkspace(file)}
             >
-              <FolderOpen className="h-4 w-4 shrink-0" />
-              <span className="truncate flex-1">{p.name}</span>
-              <span className="text-xs text-muted-foreground shrink-0">{p.image_count}</span>
-              <Button
-                size="icon"
-                variant="ghost"
-                className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleDeleteProject(p.id)
-                }}
-              >
-                <Trash2 className="h-3 w-3" />
-              </Button>
-            </div>
-          ))
-        )}
-      </div>
-
-      {/* 右侧：图片列表 */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex items-center gap-2 px-4 py-2 border-b border-border">
-          <span className="text-sm font-medium">
-            {currentProject ? currentProject.name : "所有图片"}
-          </span>
-          <div className="ml-auto flex gap-1">
-            {(["all", "generated", "inpainted", "enhanced", "uploaded"] as const).map((type) => (
-              <button
-                key={type}
-                className={cn(
-                  "px-2 py-0.5 rounded text-xs transition-colors",
-                  (type === "all" ? !filterType : filterType === type)
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-                onClick={() => setFilterType(type === "all" ? undefined : type)}
-              >
-                {IMAGE_TYPE_LABELS[type]}
-              </button>
-            ))}
+              <Upload className="h-4 w-4 mr-2" />
+              上传新图片
+            </ImageUploadButton>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4">
-          {isLoadingImages ? (
-            <div className="flex justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        <div className="flex-1 overflow-y-auto p-3">
+          {isLoadingWorkspaces ? (
+            <div className="flex items-center justify-center h-full text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
             </div>
-          ) : projectImages.length === 0 ? (
+          ) : items.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
-              <ImageIcon className="h-12 w-12 opacity-30" />
-              <p className="text-sm">暂无图片</p>
-              <p className="text-xs">生成或修复图片后将显示在此处</p>
+              <FolderOpen className="h-10 w-10 opacity-30" />
+              <p className="text-sm">还没有保存的工作</p>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-3">
-              {projectImages.map((img) => (
-                <div
-                  key={img.id}
-                  className="group relative rounded-lg overflow-hidden border border-border bg-muted aspect-square"
+            <div className="flex flex-col gap-3">
+              {items.map((item) => (
+                <button
+                  key={item.id}
+                  className={cn(
+                    "text-left rounded-xl border p-3 transition-colors bg-card hover:bg-accent/30",
+                    selectedId === item.id && "border-primary"
+                  )}
+                  onClick={() => setSelectedId(item.id)}
                 >
-                  <img
-                    src={getImageFileUrl(img.id)}
-                    alt={img.filename}
-                    className="w-full h-full object-cover"
-                  />
-                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2 gap-1">
-                    <Button
-                      size="sm"
-                      className="gap-1 text-xs h-7 flex-1"
-                      onClick={() => handleEditImage(img.id)}
-                    >
-                      <Edit2 className="h-3 w-3" />
-                      编辑
-                    </Button>
-                    <Button
-                      size="icon"
-                      variant="destructive"
-                      className="h-7 w-7 shrink-0"
-                      onClick={() => handleDeleteImage(img.id)}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
+                  <div className="aspect-[4/3] rounded-lg overflow-hidden bg-muted mb-3">
+                    {item.preview_asset_id ? (
+                      <img
+                        src={getAssetFileUrl(item.preview_asset_id)}
+                        alt={item.title}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-muted-foreground text-sm">
+                        无预览
+                      </div>
+                    )}
                   </div>
-                  <div className="absolute top-1 left-1 bg-black/60 text-white text-[9px] px-1 py-0.5 rounded capitalize">
-                    {IMAGE_TYPE_LABELS[img.image_type] ?? img.image_type}
+                  <div className="font-medium text-sm line-clamp-2">{item.title}</div>
+                  <div className="text-xs text-muted-foreground mt-1">
+                    {item.current_feature}
                   </div>
-                </div>
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground mt-2">
+                    <Clock3 className="h-3 w-3" />
+                    {new Date(item.updated_at).toLocaleString()}
+                  </div>
+                </button>
               ))}
             </div>
           )}
         </div>
       </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {!selectedId ? (
+          <div className="h-full flex items-center justify-center text-muted-foreground">
+            选择左侧一条保存记录查看详情
+          </div>
+        ) : isLoadingWorkspaceDetail || !workspaceDetail ? (
+          <div className="h-full flex items-center justify-center text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
+          </div>
+        ) : (
+          <div className="p-6 flex flex-col gap-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-xl font-semibold">{workspaceDetail.session.title}</div>
+                <div className="text-sm text-muted-foreground mt-1">
+                  当前功能: {workspaceDetail.session.current_feature}
+                </div>
+                {workspaceDetail.latest_snapshot && (
+                  <div className="text-sm text-muted-foreground">
+                    最近保存: {new Date(workspaceDetail.latest_snapshot.created_at).toLocaleString()}
+                  </div>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Button onClick={() => handleOpen(workspaceDetail.session.id)} className="gap-2">
+                  <Play className="h-4 w-4" />
+                  继续编辑
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => handleDelete(workspaceDetail.session.id)}
+                  className="gap-2"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  删除
+                </Button>
+              </div>
+            </div>
+
+            {workspaceDetail.latest_snapshot?.preview_asset_id && (
+              <div className="rounded-xl overflow-hidden border border-border bg-card">
+                <img
+                  src={getAssetFileUrl(workspaceDetail.latest_snapshot.preview_asset_id)}
+                  alt={workspaceDetail.session.title}
+                  className="w-full max-h-[420px] object-contain bg-muted/20"
+                />
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-6">
+              <div className="rounded-xl border border-border p-4 bg-card">
+                <div className="font-medium mb-3">功能状态</div>
+                <pre className="text-xs text-muted-foreground whitespace-pre-wrap break-all">
+                  {JSON.stringify(workspaceDetail.feature_states, null, 2)}
+                </pre>
+              </div>
+              <div className="rounded-xl border border-border p-4 bg-card">
+                <div className="font-medium mb-3">最近快照</div>
+                <pre className="text-xs text-muted-foreground whitespace-pre-wrap break-all">
+                  {JSON.stringify(workspaceDetail.latest_snapshot?.workspace_state ?? {}, null, 2)}
+                </pre>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border p-4 bg-card">
+              <div className="font-medium mb-3">操作记录</div>
+              {workspaceDetail.operations.length === 0 ? (
+                <div className="text-sm text-muted-foreground">暂无操作记录</div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {workspaceDetail.operations.map((operation) => (
+                    <div key={operation.id} className="rounded-lg border border-border p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-medium text-sm">
+                          {operation.feature} / {operation.operation}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {new Date(operation.started_at).toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        状态: {operation.status}
+                        {operation.model_name ? ` | 模型: ${operation.model_name}` : ""}
+                        {operation.plugin_name ? ` | 插件: ${operation.plugin_name}` : ""}
+                        {operation.duration_ms ? ` | ${operation.duration_ms}ms` : ""}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
-}
-
-const MyWorkspaceTab = () => {
-  return <WorkspaceContent />
 }
 
 export default MyWorkspaceTab

@@ -5,7 +5,7 @@ import Shortcuts from "@/components/Shortcuts"
 import { useImage } from "@/hooks/useImage"
 
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover"
-import { RotateCw, Image, Upload, LogOut, User } from "lucide-react"
+import { RotateCw, Image, Upload, LogOut, User, Save } from "lucide-react"
 import FileManager, { MASK_TAB } from "./FileManager"
 import { getMediaBlob, getMediaFile } from "@/lib/api"
 import { useStore } from "@/lib/states"
@@ -29,7 +29,12 @@ const Header = () => {
     user,
     isAuthenticated,
     activeTab,
-    setFile,
+    generatedImages,
+    removeBgState,
+    superResState,
+    faceRestoreState,
+    isSavingWorkspace,
+    loadImageForTab,
     setCustomFile,
     runInpainting,
     showPrevMask,
@@ -38,6 +43,8 @@ const Header = () => {
     imageWidth,
     handleFileManagerMaskSelect,
     logout,
+    saveWorkspace,
+    clearCurrentWorkspace,
   ] = useStore((state) => [
     state.file,
     state.customMask,
@@ -50,7 +57,12 @@ const Header = () => {
     state.user,
     state.isAuthenticated,
     state.activeTab,
-    state.setFile,
+    state.generatedImages,
+    state.removeBgState,
+    state.superResState,
+    state.faceRestoreState,
+    state.isSavingWorkspace,
+    state.loadImageForTab,
     state.setCustomFile,
     state.runInpainting,
     state.showPrevMask,
@@ -59,6 +71,8 @@ const Header = () => {
     state.imageWidth,
     state.handleFileManagerMaskSelect,
     state.logout,
+    state.saveWorkspace,
+    state.clearCurrentWorkspace,
   ])
 
   const { toast } = useToast()
@@ -83,6 +97,21 @@ const Header = () => {
   const canRunAIRepaint = serverConfig.modelInfos.some(
     (m) => m.name === AI_REPAINT_MODEL
   )
+  const canSaveWorkspace =
+    isAuthenticated &&
+    activeTab !== WorkspaceTab.MY_WORKSPACE &&
+    ((activeTab === WorkspaceTab.GENERATE && generatedImages.length > 0) ||
+      ((activeTab === WorkspaceTab.INPAINT ||
+        activeTab === WorkspaceTab.OUTPAINT ||
+        activeTab === WorkspaceTab.AI_REPAINT ||
+        activeTab === WorkspaceTab.INTERACTIVE_SEG) &&
+        !!file) ||
+      (activeTab === WorkspaceTab.REMOVE_BG &&
+        (!!removeBgState.sourceImage || !!removeBgState.resultImage)) ||
+      (activeTab === WorkspaceTab.SUPER_RES &&
+        (!!superResState.sourceImage || !!superResState.resultImage)) ||
+      (activeTab === WorkspaceTab.FACE_RESTORE &&
+        (!!faceRestoreState.sourceImage || !!faceRestoreState.resultImage)))
 
   const handleOnPhotoClick = async (tab: string, filename: string) => {
     try {
@@ -91,7 +120,8 @@ const Header = () => {
         handleFileManagerMaskSelect(maskBlob)
       } else {
         const newFile = await getMediaFile(tab, filename)
-        setFile(newFile)
+        clearCurrentWorkspace()
+        loadImageForTab(newFile, activeTab)
       }
     } catch (e: any) {
       toast({
@@ -111,15 +141,26 @@ const Header = () => {
           <></>
         )}
 
-        <ImageUploadButton
+          <ImageUploadButton
           disabled={isInpainting}
           tooltip="上传图片"
           onFileUpload={(file) => {
-            setFile(file)
+            clearCurrentWorkspace()
+            loadImageForTab(file, activeTab)
           }}
         >
           <Image />
         </ImageUploadButton>
+
+        {canSaveWorkspace ? (
+          <IconButton
+            disabled={isProcessing || isSavingWorkspace}
+            tooltip={isSavingWorkspace ? "保存中…" : "保存到我的作品"}
+            onClick={saveWorkspace}
+          >
+            <Save />
+          </IconButton>
+        ) : null}
 
         <div
           className={cn([

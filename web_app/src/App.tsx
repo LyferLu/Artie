@@ -22,11 +22,12 @@ const SUPPORTED_FILE_TYPE = [
 ]
 
 function Home() {
-  const [file, updateAppState, setFile, activeTab] = useStore((state) => [
+  const [file, updateAppState, loadImageForTab, activeTab, clearCurrentWorkspace] = useStore((state) => [
     state.file,
     state.updateAppState,
-    state.setFile,
+    state.loadImageForTab,
     state.activeTab,
+    state.clearCurrentWorkspace,
   ])
 
   const userInputImage = useInputImage()
@@ -34,9 +35,10 @@ function Home() {
 
   useEffect(() => {
     if (userInputImage) {
-      setFile(userInputImage)
+      clearCurrentWorkspace()
+      loadImageForTab(userInputImage, activeTab)
     }
-  }, [userInputImage, setFile])
+  }, [clearCurrentWorkspace, loadImageForTab, userInputImage])
 
   useEffect(() => {
     updateAppState({ windowSize })
@@ -69,12 +71,13 @@ function Home() {
       if (event.dataTransfer.files.length === 1) {
         const dragFile = event.dataTransfer.files[0]
         if (SUPPORTED_FILE_TYPE.includes(dragFile.type)) {
-          setFile(dragFile)
+          clearCurrentWorkspace()
+          loadImageForTab(dragFile, activeTab)
         }
       }
       event.dataTransfer.clearData()
     }
-  }, [])
+  }, [activeTab, clearCurrentWorkspace, loadImageForTab])
 
   const onPaste = useCallback((event: any) => {
     if (!event.clipboardData) return
@@ -87,8 +90,11 @@ function Home() {
     event.stopPropagation()
 
     const blob = items[0].getAsFile()
-    if (blob) setFile(blob)
-  }, [])
+    if (blob) {
+      clearCurrentWorkspace()
+      loadImageForTab(blob, activeTab)
+    }
+  }, [activeTab, clearCurrentWorkspace, loadImageForTab])
 
   useEffect(() => {
     window.addEventListener("dragenter", handleDragIn)
@@ -121,7 +127,8 @@ function Home() {
       {showFileSelect ? (
         <FileSelect
           onSelection={async (f) => {
-            setFile(f)
+            clearCurrentWorkspace()
+            loadImageForTab(f, activeTab)
           }}
         />
       ) : (

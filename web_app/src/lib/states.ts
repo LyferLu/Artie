@@ -7,7 +7,6 @@ import {
   AdjustMaskOperate,
   CV2Flag,
   ExtenderDirection,
-  ImageInfo,
   LDMSampler,
   Line,
   LineGroup,
@@ -15,12 +14,14 @@ import {
   PluginParams,
   Point,
   PowerPaintTask,
-  ProjectInfo,
   ServerConfig,
   Size,
   SortBy,
   SortOrder,
   UserInfo,
+  WorkspaceDetail,
+  WorkspaceResumePayload,
+  WorkspaceSummary,
   WorkspaceTab,
 } from "./types"
 import {
@@ -36,6 +37,7 @@ import {
 import {
   blobToImage,
   canvasToImage,
+  convertToBase64,
   dataURItoBlob,
   generateMask,
   loadImage,
@@ -46,16 +48,18 @@ import inpaint, {
   authMe,
   authRegister,
   cancelCurrentTask as cancelCurrentTaskApi,
-  createProject,
-  deleteImage,
-  deleteProject,
+  deleteWorkspace,
   getGenInfo,
-  getImages,
-  getProjects,
+  getAssetFileUrl,
+  getWorkspaceDetail,
+  importWorkspaceFile,
+  listWorkspaces,
   postAdjustMask,
   runPlugin,
+  saveWorkspace as saveWorkspaceApi,
   setAuthToken,
   txt2img,
+  resumeWorkspace as resumeWorkspaceApi,
 } from "./api"
 import { toast } from "@/components/ui/use-toast"
 
@@ -73,6 +77,23 @@ type CropperState = {
   y: number
   width: number
   height: number
+}
+
+type ImageRef = {
+  file: File
+  url: string
+}
+
+type GeneratedImage = {
+  url: string
+  seed: string
+}
+
+type FeatureResultState = {
+  selectedModel?: string
+  selectedPlugin?: string
+  sourceImage: ImageRef | null
+  resultImage: ImageRef | null
 }
 
 export type Settings = {
@@ -191,23 +212,28 @@ type AppState = {
   settingsByFeature: FeatureSettingsMap
 
   activeTab: WorkspaceTab
-  generatedImages: Array<{ url: string; seed: string }>
+  generatedImages: GeneratedImage[]
+  selectedGeneratedImageIndex: number
   isGenerating: boolean
   isCancelingTask: boolean
   // 全局工作图片，所有标签页共享
-  workingImage: { file: File; url: string } | null
+  workingImage: ImageRef | null
+  removeBgState: FeatureResultState
+  superResState: FeatureResultState
+  faceRestoreState: FeatureResultState
 
   // Auth state
   user: UserInfo | null
   token: string | null
   isAuthenticated: boolean
 
-  // User data
-  projects: ProjectInfo[]
-  currentProject: ProjectInfo | null
-  projectImages: ImageInfo[]
-  isLoadingProjects: boolean
-  isLoadingImages: boolean
+  // Workspace data
+  currentWorkspaceSessionId: string | null
+  workspaceItems: WorkspaceSummary[]
+  workspaceDetail: WorkspaceDetail | null
+  isSavingWorkspace: boolean
+  isLoadingWorkspaces: boolean
+  isLoadingWorkspaceDetail: boolean
 }
 
 type AppAction = {
@@ -288,20 +314,30 @@ type AppAction = {
   clearGeneratedImages: () => void
   sendToTab: (blobUrl: string, tab: WorkspaceTab) => Promise<void>
   setWorkingImage: (file: File) => void
+  loadImageForTab: (file: File, tab: WorkspaceTab) => Promise<void>
+  selectGeneratedImage: (index: number) => void
+  setFeatureSourceImage: (tab: WorkspaceTab.REMOVE_BG | WorkspaceTab.SUPER_RES | WorkspaceTab.FACE_RESTORE, file: File) => void
+  setFeatureResultImage: (
+    tab: WorkspaceTab.REMOVE_BG | WorkspaceTab.SUPER_RES | WorkspaceTab.FACE_RESTORE,
+    file: File | null
+  ) => void
+  setFeatureSelectedModel: (
+    tab: WorkspaceTab.REMOVE_BG | WorkspaceTab.SUPER_RES | WorkspaceTab.FACE_RESTORE,
+    value: string
+  ) => void
+  clearCurrentWorkspace: () => void
+  saveWorkspace: () => Promise<void>
+  fetchWorkspaces: (search?: string, feature?: string) => Promise<void>
+  fetchWorkspaceDetail: (id: string) => Promise<void>
+  resumeWorkspace: (id: string) => Promise<void>
+  importFileToWorkspace: (file: File, title?: string) => Promise<void>
+  deleteWorkspaceItem: (id: string) => Promise<void>
 
   // Auth actions
   login: (username: string, password: string) => Promise<void>
   register: (username: string, email: string, password: string) => Promise<void>
   logout: () => void
   restoreSession: () => Promise<void>
-
-  // User data actions
-  fetchProjects: () => Promise<void>
-  createUserProject: (name: string, description?: string) => Promise<void>
-  deleteUserProject: (id: string) => Promise<void>
-  setCurrentProject: (project: ProjectInfo | null) => void
-  fetchProjectImages: (projectId?: string, imageType?: string) => Promise<void>
-  deleteUserImage: (id: string) => Promise<void>
 }
 
 const createDefaultModelInfo = (): ModelInfo => ({
@@ -382,8 +418,10 @@ const createDefaultSettingsForTab = (tab: WorkspaceTab): Settings => {
       negativePrompt: "",
       showExtender: true,
       showCropper: false,
-      sdSteps: 30,
-      sdGuidanceScale: 10.0,
+      sdStrength: 0.3,
+      sdSteps: 50,
+      sdGuidanceScale: 12.0,
+      sdMatchHistograms: true,
       powerpaintTask: PowerPaintTask.outpainting,
     }
   }
@@ -442,6 +480,35 @@ const createDefaultSettingsByFeature = (): FeatureSettingsMap => ({
   ),
   [WorkspaceTab.MY_WORKSPACE]: createDefaultSettingsForTab(WorkspaceTab.MY_WORKSPACE),
 })
+
+const createEmptyFeatureResultState = (): FeatureResultState => ({
+  selectedModel: undefined,
+  selectedPlugin: undefined,
+  sourceImage: null,
+  resultImage: null,
+})
+
+const revokeImageRef = (ref: ImageRef | null) => {
+  if (ref?.url) URL.revokeObjectURL(ref.url)
+}
+
+const makeImageRef = (file: File): ImageRef => ({
+  file,
+  url: URL.createObjectURL(file),
+})
+
+const EDITOR_TABS = [
+  WorkspaceTab.INPAINT,
+  WorkspaceTab.OUTPAINT,
+  WorkspaceTab.AI_REPAINT,
+  WorkspaceTab.INTERACTIVE_SEG,
+]
+
+const FEATURE_RESULT_TABS = [
+  WorkspaceTab.REMOVE_BG,
+  WorkspaceTab.SUPER_RES,
+  WorkspaceTab.FACE_RESTORE,
+]
 
 const defaultValues: AppState = {
   file: null,
@@ -524,19 +591,24 @@ const defaultValues: AppState = {
 
   activeTab: WorkspaceTab.INPAINT,
   generatedImages: [],
+  selectedGeneratedImageIndex: 0,
   isGenerating: false,
   isCancelingTask: false,
   workingImage: null,
+  removeBgState: createEmptyFeatureResultState(),
+  superResState: createEmptyFeatureResultState(),
+  faceRestoreState: createEmptyFeatureResultState(),
 
   user: null,
   token: null,
   isAuthenticated: false,
 
-  projects: [],
-  currentProject: null,
-  projectImages: [],
-  isLoadingProjects: false,
-  isLoadingImages: false,
+  currentWorkspaceSessionId: null,
+  workspaceItems: [],
+  workspaceDetail: null,
+  isSavingWorkspace: false,
+  isLoadingWorkspaces: false,
+  isLoadingWorkspaceDetail: false,
 }
 
 export const useStore = createWithEqualityFn<AppState & AppAction>()(
@@ -746,7 +818,8 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             cropperState,
             extenderState,
             dataURItoBlob(maskCanvas.toDataURL()),
-            paintByExampleFile
+            paintByExampleFile,
+            get().currentWorkspaceSessionId ?? undefined
           )
 
           const { blob, seed } = res
@@ -797,7 +870,9 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             genMask,
             pluginName,
             targetFile,
-            params.upscale
+            params.upscale,
+            undefined,
+            get().currentWorkspaceSessionId ?? undefined
           )
           const { blob } = res
 
@@ -1380,12 +1455,69 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
 
       setActiveTab: (tab: WorkspaceTab) => {
         const prevTab = get().activeTab
-        const EDITOR_TABS = [
-          WorkspaceTab.INPAINT,
-          WorkspaceTab.OUTPAINT,
-          WorkspaceTab.AI_REPAINT,
-          WorkspaceTab.INTERACTIVE_SEG,
-        ]
+
+        const resolveCurrentTabImage = async (): Promise<File | null> => {
+          if (EDITOR_TABS.includes(prevTab)) {
+            const currentFile = get().file
+            if (!currentFile) {
+              return get().workingImage?.file ?? null
+            }
+
+            const renders = get().editorState.renders
+            if (renders.length > 0) {
+              const lastRender = renders[renders.length - 1]
+              return srcToFile(
+                lastRender.currentSrc,
+                currentFile.name,
+                currentFile.type
+              )
+            }
+            return currentFile
+          }
+
+          if (prevTab === WorkspaceTab.GENERATE) {
+            const selected =
+              get().generatedImages[get().selectedGeneratedImageIndex] ??
+              get().generatedImages[0]
+            if (!selected) {
+              return get().workingImage?.file ?? null
+            }
+            const response = await fetch(selected.url)
+            const blob = await response.blob()
+            return new File([blob], "generated.png", {
+              type: blob.type || "image/png",
+            })
+          }
+
+          if (prevTab === WorkspaceTab.REMOVE_BG) {
+            return (
+              get().removeBgState.resultImage?.file ??
+              get().removeBgState.sourceImage?.file ??
+              get().workingImage?.file ??
+              null
+            )
+          }
+
+          if (prevTab === WorkspaceTab.SUPER_RES) {
+            return (
+              get().superResState.resultImage?.file ??
+              get().superResState.sourceImage?.file ??
+              get().workingImage?.file ??
+              null
+            )
+          }
+
+          if (prevTab === WorkspaceTab.FACE_RESTORE) {
+            return (
+              get().faceRestoreState.resultImage?.file ??
+              get().faceRestoreState.sourceImage?.file ??
+              get().workingImage?.file ??
+              null
+            )
+          }
+
+          return get().workingImage?.file ?? get().file ?? null
+        }
 
         // 离开画布标签页时，快照最新编辑结果到 workingImage
         if (EDITOR_TABS.includes(prevTab)) {
@@ -1409,11 +1541,22 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         }
 
         set((state) => {
-          state.settingsByFeature[prevTab] = castDraft(
-            cloneSettings(state.settings)
-          )
-          state.activeTab = tab
+            state.settingsByFeature[prevTab] = castDraft(
+              cloneSettings(state.settings)
+            )
+            state.activeTab = tab
         })
+
+        if (prevTab !== tab && FEATURE_RESULT_TABS.includes(tab)) {
+          resolveCurrentTabImage()
+            .then((sourceFile) => {
+              if (!sourceFile) {
+                return
+              }
+              return get().loadImageForTab(sourceFile, tab)
+            })
+            .catch(console.error)
+        }
 
         // 进入画布标签页时，如果 workingImage 存在且 file 为空，自动加载
         if (EDITOR_TABS.includes(tab)) {
@@ -1475,6 +1618,13 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
       clearGeneratedImages: () => {
         set((state) => {
           state.generatedImages = []
+          state.selectedGeneratedImageIndex = 0
+        })
+      },
+
+      selectGeneratedImage: (index: number) => {
+        set((state) => {
+          state.selectedGeneratedImageIndex = index
         })
       },
 
@@ -1482,30 +1632,94 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         try {
           const res = await fetch(blobUrl)
           const blob = await res.blob()
-          const file = new File([blob], "generated.png", { type: "image/png" })
-          const url = URL.createObjectURL(file)
-          const old = get().workingImage
-          if (old?.url) URL.revokeObjectURL(old.url)
-          set((state) => {
-            state.workingImage = castDraft({ file, url })
+          const file = new File([blob], "generated.png", {
+            type: blob.type || "image/png",
           })
-          get().setActiveTab(tab)  // 使用 setActiveTab 而非直接设置，确保 tab 上下文逻辑执行
+          await get().loadImageForTab(file, tab)
+          get().setActiveTab(tab)
         } catch (e) {
           console.error("sendToTab failed:", e)
         }
       },
 
       setWorkingImage: (file: File) => {
-        const url = URL.createObjectURL(file)
-        const old = get().workingImage
-        if (old?.url) URL.revokeObjectURL(old.url)
         set((state) => {
-          state.workingImage = castDraft({ file, url })
+          revokeImageRef(state.workingImage)
+          state.workingImage = castDraft(makeImageRef(file))
+        })
+      },
+
+      loadImageForTab: async (file: File, tab: WorkspaceTab) => {
+        if (
+          tab === WorkspaceTab.REMOVE_BG ||
+          tab === WorkspaceTab.SUPER_RES ||
+          tab === WorkspaceTab.FACE_RESTORE
+        ) {
+          get().setFeatureSourceImage(tab, file)
+          get().setWorkingImage(file)
+          return
+        }
+
+        await get().setFile(file)
+        get().setWorkingImage(file)
+      },
+
+      setFeatureSourceImage: (tab, file) => {
+        set((state) => {
+          const next = makeImageRef(file)
+          if (tab === WorkspaceTab.REMOVE_BG) {
+            revokeImageRef(state.removeBgState.sourceImage)
+            state.removeBgState.sourceImage = castDraft(next)
+            revokeImageRef(state.removeBgState.resultImage)
+            state.removeBgState.resultImage = null
+          } else if (tab === WorkspaceTab.SUPER_RES) {
+            revokeImageRef(state.superResState.sourceImage)
+            state.superResState.sourceImage = castDraft(next)
+            revokeImageRef(state.superResState.resultImage)
+            state.superResState.resultImage = null
+          } else {
+            revokeImageRef(state.faceRestoreState.sourceImage)
+            state.faceRestoreState.sourceImage = castDraft(next)
+            revokeImageRef(state.faceRestoreState.resultImage)
+            state.faceRestoreState.resultImage = null
+          }
+        })
+      },
+
+      setFeatureResultImage: (tab, file) => {
+        set((state) => {
+          const target =
+            tab === WorkspaceTab.REMOVE_BG
+              ? state.removeBgState
+              : tab === WorkspaceTab.SUPER_RES
+              ? state.superResState
+              : state.faceRestoreState
+          revokeImageRef(target.resultImage)
+          target.resultImage = file ? castDraft(makeImageRef(file)) : null
+        })
+      },
+
+      setFeatureSelectedModel: (tab, value) => {
+        set((state) => {
+          if (tab === WorkspaceTab.REMOVE_BG) {
+            state.removeBgState.selectedModel = value
+          } else if (tab === WorkspaceTab.SUPER_RES) {
+            state.superResState.selectedModel = value
+          } else {
+            state.faceRestoreState.selectedPlugin = value
+          }
+        })
+      },
+
+      clearCurrentWorkspace: () => {
+        set((state) => {
+          state.currentWorkspaceSessionId = null
+          state.workspaceDetail = null
         })
       },
 
       runTxt2Img: async () => {
-        const { settings, serverConfig } = get()
+        const { settings, serverConfig, currentWorkspaceSessionId } = get()
         let selectedModel = settings.model
         if (!selectedModel.support_txt2img) {
           const fallback = serverConfig.modelInfos.find((m) => m.support_txt2img)
@@ -1536,6 +1750,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             steps: settings.sdSteps,
             guidanceScale: settings.sdGuidanceScale,
             sampler: settings.sdSampler,
+            sessionId: currentWorkspaceSessionId ?? undefined,
             seed: settings.seed,
             seedFixed: settings.seedFixed,
             enableLCMLora: settings.enableLCMLora,
@@ -1546,6 +1761,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
                 url: result.blob,
                 seed: result.seed ?? "0",
               })
+              state.selectedGeneratedImageIndex = 0
             })
           }
         } catch (e: any) {
@@ -1560,6 +1776,335 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             state.isCancelingTask = false
           })
         }
+      },
+
+      saveWorkspace: async () => {
+        if (!get().isAuthenticated) {
+          toast({
+            variant: "destructive",
+            description: "请先登录后再保存到“我的作品”。",
+          })
+          return
+        }
+
+        set((state) => {
+          state.isSavingWorkspace = true
+        })
+
+        try {
+          const state = get()
+          const assets: Array<{
+            role: string
+            kind: string
+            data: string
+            filename?: string
+            label?: string
+            mime_type?: string
+            width?: number
+            height?: number
+            metadata?: Record<string, any>
+          }> = []
+
+          const pushFileAsset = async (
+            file: File,
+            role: string,
+            kind: string,
+            label?: string
+          ) => {
+            assets.push({
+              role,
+              kind,
+              data: await convertToBase64(file),
+              filename: file.name,
+              label,
+              mime_type: file.type,
+            })
+          }
+
+          const activeTab = state.activeTab
+          const workspaceState: Record<string, any> = {
+            cropperState: state.cropperState,
+            extenderState: state.extenderState,
+            selectedGeneratedImageIndex: state.selectedGeneratedImageIndex,
+            removeBgState: {
+              selectedModel: state.removeBgState.selectedModel,
+            },
+            superResState: {
+              selectedModel: state.superResState.selectedModel,
+            },
+            faceRestoreState: {
+              selectedPlugin: state.faceRestoreState.selectedPlugin,
+            },
+          }
+
+          if (activeTab === WorkspaceTab.GENERATE) {
+            const selected =
+              state.generatedImages[state.selectedGeneratedImageIndex] ??
+              state.generatedImages[0]
+            if (!selected) {
+              throw new Error("当前没有可保存的文生图结果")
+            }
+            const res = await fetch(selected.url)
+            const blob = await res.blob()
+            const file = new File([blob], "generated.png", { type: "image/png" })
+            await pushFileAsset(file, "primary", "generated", "generated")
+            await pushFileAsset(file, "preview", "preview", "preview")
+          } else if (
+            activeTab === WorkspaceTab.INPAINT ||
+            activeTab === WorkspaceTab.OUTPAINT ||
+            activeTab === WorkspaceTab.AI_REPAINT ||
+            activeTab === WorkspaceTab.INTERACTIVE_SEG
+          ) {
+            const primaryFile = await state.getCurrentTargetFile()
+            await pushFileAsset(primaryFile, "primary", activeTab, activeTab)
+            await pushFileAsset(primaryFile, "preview", "preview", "preview")
+            if (state.file) {
+              await pushFileAsset(state.file, "source", "uploaded", "source")
+            }
+            const hasMask =
+              state.editorState.curLineGroup.length > 0 ||
+              state.editorState.extraMasks.length > 0
+            if (hasMask) {
+              const maskCanvas = generateMask(
+                state.imageWidth,
+                state.imageHeight,
+                [state.editorState.curLineGroup],
+                state.editorState.extraMasks,
+                BRUSH_COLOR
+              )
+              const maskBlob = dataURItoBlob(maskCanvas.toDataURL())
+              const maskFile = new File([maskBlob], "mask.png", { type: "image/png" })
+              await pushFileAsset(maskFile, "mask", "mask", "mask")
+            }
+          } else {
+            const featureState =
+              activeTab === WorkspaceTab.REMOVE_BG
+                ? state.removeBgState
+                : activeTab === WorkspaceTab.SUPER_RES
+                ? state.superResState
+                : state.faceRestoreState
+            const primary = featureState.resultImage ?? featureState.sourceImage
+            if (!primary) {
+              throw new Error("当前没有可保存的图片")
+            }
+            if (featureState.sourceImage) {
+              await pushFileAsset(featureState.sourceImage.file, "source", "uploaded", "source")
+            }
+            if (featureState.resultImage) {
+              await pushFileAsset(featureState.resultImage.file, "result", activeTab, "result")
+            }
+            await pushFileAsset(primary.file, "primary", activeTab, "primary")
+            await pushFileAsset(primary.file, "preview", "preview", "preview")
+          }
+
+          const detail = await saveWorkspaceApi({
+            session_id: state.currentWorkspaceSessionId,
+            active_tab: activeTab,
+            settings_by_feature: state.settingsByFeature,
+            workspace_state: workspaceState,
+            assets,
+          })
+
+          set((draft) => {
+            draft.currentWorkspaceSessionId = detail.session.id
+            draft.workspaceDetail = detail
+          })
+          await get().fetchWorkspaces()
+          toast({
+            description: "已保存到“我的作品”。",
+          })
+        } catch (e: any) {
+          toast({
+            variant: "destructive",
+            description: e.message ? e.message : e.toString(),
+          })
+        } finally {
+          set((state) => {
+            state.isSavingWorkspace = false
+          })
+        }
+      },
+
+      fetchWorkspaces: async (search?: string, feature?: string) => {
+        if (!get().isAuthenticated) return
+        set((state) => {
+          state.isLoadingWorkspaces = true
+        })
+        try {
+          const items = await listWorkspaces(search, feature)
+          set((state) => {
+            state.workspaceItems = items
+          })
+        } finally {
+          set((state) => {
+            state.isLoadingWorkspaces = false
+          })
+        }
+      },
+
+      fetchWorkspaceDetail: async (id: string) => {
+        if (!get().isAuthenticated) return
+        set((state) => {
+          state.isLoadingWorkspaceDetail = true
+        })
+        try {
+          const detail = await getWorkspaceDetail(id)
+          set((state) => {
+            state.workspaceDetail = detail
+          })
+        } finally {
+          set((state) => {
+            state.isLoadingWorkspaceDetail = false
+          })
+        }
+      },
+
+      resumeWorkspace: async (id: string) => {
+        const payload: WorkspaceResumePayload = await resumeWorkspaceApi(id)
+        const roleMap = payload.snapshot.asset_roles || {}
+        const loadAssetFile = async (assetId?: string) => {
+          if (!assetId) return null
+          const res = await fetch(getAssetFileUrl(assetId))
+          const blob = await res.blob()
+          const type = res.headers.get("Content-Type") || "image/png"
+          return new File([blob], `${assetId}.${type.split("/")[1] || "png"}`, {
+            type,
+          })
+        }
+
+        const primaryFile = await loadAssetFile(roleMap.primary)
+        const sourceFile = await loadAssetFile(roleMap.source)
+        const resultFile = await loadAssetFile(roleMap.result)
+        const maskFile = await loadAssetFile(roleMap.mask)
+        const targetTab = payload.snapshot.active_tab as WorkspaceTab
+
+        set((state) => {
+          state.currentWorkspaceSessionId = payload.session.id
+          state.workspaceDetail = {
+            session: payload.session,
+            latest_snapshot: payload.snapshot,
+            feature_states: payload.feature_states,
+            operations: [],
+          }
+          state.generatedImages = []
+          state.selectedGeneratedImageIndex = 0
+          state.removeBgState = castDraft(createEmptyFeatureResultState())
+          state.superResState = castDraft(createEmptyFeatureResultState())
+          state.faceRestoreState = castDraft(createEmptyFeatureResultState())
+          state.editorState = castDraft(defaultValues.editorState)
+          state.cropperState = castDraft(
+            payload.snapshot.workspace_state.cropperState ?? defaultValues.cropperState
+          )
+          state.extenderState = castDraft(
+            payload.snapshot.workspace_state.extenderState ?? defaultValues.extenderState
+          )
+        })
+
+        set((state) => {
+          const merged = createDefaultSettingsByFeature()
+          for (const [key, value] of Object.entries(payload.feature_states || {})) {
+            if (merged[key as WorkspaceTab]) {
+              merged[key as WorkspaceTab] = {
+                ...merged[key as WorkspaceTab],
+                ...(value as Settings),
+              }
+            }
+          }
+          state.settingsByFeature = castDraft(merged)
+          state.settings = castDraft(cloneSettings(merged[targetTab]))
+        })
+
+        if (
+          targetTab === WorkspaceTab.INPAINT ||
+          targetTab === WorkspaceTab.OUTPAINT ||
+          targetTab === WorkspaceTab.AI_REPAINT ||
+          targetTab === WorkspaceTab.INTERACTIVE_SEG
+        ) {
+          const file = primaryFile ?? sourceFile
+          if (file) {
+            await get().setFile(file)
+            get().setWorkingImage(file)
+          }
+          if (maskFile) {
+            const img = await blobToImage(maskFile)
+            set((state) => {
+              state.editorState.extraMasks = [castDraft(img)]
+            })
+          }
+        } else if (targetTab === WorkspaceTab.GENERATE) {
+          const file = primaryFile ?? sourceFile
+          if (file) {
+            const imageRef = makeImageRef(file)
+            set((state) => {
+              state.generatedImages = [{ url: imageRef.url, seed: "" }]
+              state.selectedGeneratedImageIndex = 0
+              revokeImageRef(state.workingImage)
+              state.workingImage = castDraft(imageRef)
+              state.file = null
+            })
+          }
+        } else if (targetTab === WorkspaceTab.REMOVE_BG) {
+          if (sourceFile ?? primaryFile) {
+            get().setFeatureSourceImage(
+              WorkspaceTab.REMOVE_BG,
+              (sourceFile ?? primaryFile)!
+            )
+          }
+          if (resultFile) get().setFeatureResultImage(WorkspaceTab.REMOVE_BG, resultFile)
+        } else if (targetTab === WorkspaceTab.SUPER_RES) {
+          if (sourceFile ?? primaryFile) {
+            get().setFeatureSourceImage(
+              WorkspaceTab.SUPER_RES,
+              (sourceFile ?? primaryFile)!
+            )
+          }
+          if (resultFile) get().setFeatureResultImage(WorkspaceTab.SUPER_RES, resultFile)
+        } else if (targetTab === WorkspaceTab.FACE_RESTORE) {
+          if (sourceFile ?? primaryFile) {
+            get().setFeatureSourceImage(
+              WorkspaceTab.FACE_RESTORE,
+              (sourceFile ?? primaryFile)!
+            )
+          }
+          if (resultFile) get().setFeatureResultImage(WorkspaceTab.FACE_RESTORE, resultFile)
+        }
+
+        const savedWorkspaceState = payload.snapshot.workspace_state || {}
+        if (savedWorkspaceState.removeBgState?.selectedModel) {
+          get().setFeatureSelectedModel(
+            WorkspaceTab.REMOVE_BG,
+            savedWorkspaceState.removeBgState.selectedModel
+          )
+        }
+        if (savedWorkspaceState.superResState?.selectedModel) {
+          get().setFeatureSelectedModel(
+            WorkspaceTab.SUPER_RES,
+            savedWorkspaceState.superResState.selectedModel
+          )
+        }
+        if (savedWorkspaceState.faceRestoreState?.selectedPlugin) {
+          get().setFeatureSelectedModel(
+            WorkspaceTab.FACE_RESTORE,
+            savedWorkspaceState.faceRestoreState.selectedPlugin
+          )
+        }
+
+        get().setActiveTab(targetTab)
+      },
+
+      importFileToWorkspace: async (file: File, title?: string) => {
+        const imported = await importWorkspaceFile(file, title)
+        await get().resumeWorkspace(imported.session_id)
+      },
+
+      deleteWorkspaceItem: async (id: string) => {
+        await deleteWorkspace(id)
+        set((state) => {
+          state.workspaceItems = state.workspaceItems.filter((item) => item.id !== id)
+          if (state.workspaceDetail?.session.id === id) {
+            state.workspaceDetail = null
+          }
+        })
       },
 
       cancelCurrentTask: async () => {
@@ -1608,6 +2153,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.user = user
           state.isAuthenticated = true
         })
+        await get().fetchWorkspaces()
       },
 
       register: async (username: string, email: string, password: string) => {
@@ -1622,9 +2168,9 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.token = null
           state.user = null
           state.isAuthenticated = false
-          state.projects = []
-          state.currentProject = null
-          state.projectImages = []
+          state.workspaceItems = []
+          state.workspaceDetail = null
+          state.currentWorkspaceSessionId = null
         })
       },
 
@@ -1638,76 +2184,15 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             state.user = user
             state.isAuthenticated = true
           })
+          await get().fetchWorkspaces()
         } catch {
           get().logout()
         }
       },
-
-      // ------------------------------------------------------------------
-      // User data actions
-      // ------------------------------------------------------------------
-
-      fetchProjects: async () => {
-        if (!get().isAuthenticated) return
-        set((state) => { state.isLoadingProjects = true })
-        try {
-          const projects = await getProjects()
-          set((state) => { state.projects = projects })
-        } catch {
-          // silently ignore
-        } finally {
-          set((state) => { state.isLoadingProjects = false })
-        }
-      },
-
-      createUserProject: async (name: string, description = "") => {
-        const project = await createProject(name, description)
-        set((state) => {
-          state.projects.unshift(project)
-        })
-      },
-
-      deleteUserProject: async (id: string) => {
-        await deleteProject(id)
-        set((state) => {
-          state.projects = state.projects.filter((p) => p.id !== id)
-          if (state.currentProject?.id === id) {
-            state.currentProject = null
-            state.projectImages = []
-          }
-        })
-      },
-
-      setCurrentProject: (project: ProjectInfo | null) => {
-        set((state) => { state.currentProject = project })
-        if (project) {
-          get().fetchProjectImages(project.id)
-        }
-      },
-
-      fetchProjectImages: async (projectId?: string, imageType?: string) => {
-        if (!get().isAuthenticated) return
-        set((state) => { state.isLoadingImages = true })
-        try {
-          const images = await getImages(projectId, imageType)
-          set((state) => { state.projectImages = images })
-        } catch {
-          // silently ignore
-        } finally {
-          set((state) => { state.isLoadingImages = false })
-        }
-      },
-
-      deleteUserImage: async (id: string) => {
-        await deleteImage(id)
-        set((state) => {
-          state.projectImages = state.projectImages.filter((img) => img.id !== id)
-        })
-      },
     })),
     {
       name: "ZUSTAND_STATE",
-      version: 5,
+      version: 6,
       migrate: (persistedState: any, version: number) => {
         if (version < 4) {
           // Add txt2imgWidth/txt2imgHeight defaults if missing
@@ -1727,6 +2212,14 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           delete persistedState.settings
           delete persistedState.settingsByFeature
           delete persistedState.activeTab
+        }
+        if (version < 6) {
+          delete persistedState.projects
+          delete persistedState.currentProject
+          delete persistedState.projectImages
+          delete persistedState.workspaceItems
+          delete persistedState.workspaceDetail
+          delete persistedState.currentWorkspaceSessionId
         }
         return persistedState
       },

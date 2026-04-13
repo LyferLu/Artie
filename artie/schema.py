@@ -2,7 +2,7 @@ import random
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Literal, List
+from typing import Any, Optional, Literal, List
 
 from loguru import logger
 
@@ -296,6 +296,7 @@ class ApiConfig(BaseModel):
 
 
 class InpaintRequest(BaseModel):
+    session_id: Optional[str] = Field(None, description="Active workspace session")
     image: Optional[str] = Field(None, description="base64 encoded image")
     mask: Optional[str] = Field(None, description="base64 encoded mask")
     task_type: Optional[Literal["inpaint", "outpaint", "repaint"]] = Field(
@@ -468,10 +469,12 @@ class InpaintRequest(BaseModel):
 
 
 class RunPluginRequest(BaseModel):
+    session_id: Optional[str] = Field(None, description="Active workspace session")
     name: str
     image: str = Field(..., description="base64 encoded image")
-    clicks: List[List[int]] = Field(
-        [], description="Clicks for interactive seg, [[x,y,0/1], [x2,y2,0/1]]"
+    clicks: List[List[float]] = Field(
+        default_factory=list,
+        description="Clicks for interactive seg, [[x,y,0/1], [x2,y2,0/1]]",
     )
     scale: float = Field(2.0, description="Scale for upscaling")
 
@@ -544,6 +547,7 @@ class SwitchTabRequest(BaseModel):
 
 
 class Txt2ImgRequest(BaseModel):
+    session_id: Optional[str] = Field(None, description="Active workspace session")
     prompt: str = Field(..., description="Text prompt for image generation")
     negative_prompt: str = Field("", description="Negative prompt")
     model_name: Optional[str] = Field(
@@ -597,40 +601,101 @@ class TokenResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Project schemas
+# Workspace schemas
 # ---------------------------------------------------------------------------
 
-class ProjectCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=128)
-    description: str = Field("", max_length=512)
+class WorkspaceAssetUpload(BaseModel):
+    role: str
+    kind: str
+    data: str = Field(..., description="Base64 data URL")
+    filename: Optional[str] = None
+    label: Optional[str] = None
+    mime_type: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class ProjectResponse(BaseModel):
+class SaveWorkspaceRequest(BaseModel):
+    session_id: Optional[str] = None
+    title: Optional[str] = None
+    active_tab: str
+    settings_by_feature: dict[str, Any] = Field(default_factory=dict)
+    workspace_state: dict[str, Any] = Field(default_factory=dict)
+    assets: List[WorkspaceAssetUpload] = Field(default_factory=list)
+
+
+class WorkspaceImportResponse(BaseModel):
     id: str
     name: str
-    description: Optional[str]
-    image_count: int = 0
+    session_id: str
+    asset_id: str
+    created_at: datetime
+
+
+class WorkspaceAssetInfo(BaseModel):
+    id: str
+    kind: str
+    origin_feature: Optional[str] = None
+    label: Optional[str] = None
+    mime_type: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class WorkspaceSnapshotResponse(BaseModel):
+    id: str
+    title: Optional[str] = None
+    active_tab: str
+    primary_asset_id: Optional[str] = None
+    mask_asset_id: Optional[str] = None
+    preview_asset_id: Optional[str] = None
+    asset_roles: dict[str, str] = Field(default_factory=dict)
+    workspace_state: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class WorkspaceOperationResponse(BaseModel):
+    id: str
+    feature: str
+    operation: str
+    model_name: Optional[str] = None
+    plugin_name: Optional[str] = None
+    status: str
+    duration_ms: Optional[int] = None
+    request_data: dict[str, Any] = Field(default_factory=dict)
+    response_data: dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+
+
+class WorkspaceSummaryResponse(BaseModel):
+    id: str
+    title: str
+    status: str
+    source_feature: str
+    current_feature: str
+    current_snapshot_id: Optional[str] = None
+    primary_asset_id: Optional[str] = None
+    preview_asset_id: Optional[str] = None
+    last_operation_id: Optional[str] = None
+    last_operation: Optional[WorkspaceOperationResponse] = None
     created_at: datetime
     updated_at: datetime
 
-    model_config = {"from_attributes": True}
+
+class WorkspaceDetailResponse(BaseModel):
+    session: WorkspaceSummaryResponse
+    latest_snapshot: Optional[WorkspaceSnapshotResponse] = None
+    feature_states: dict[str, Any] = Field(default_factory=dict)
+    operations: List[WorkspaceOperationResponse] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Image schemas
-# ---------------------------------------------------------------------------
-
-class ImageResponse(BaseModel):
-    id: str
-    filename: str
-    image_type: str
-    prompt: Optional[str] = None
-    negative_prompt: Optional[str] = None
-    seed: Optional[int] = None
-    model_name: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    project_id: Optional[str] = None
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
+class WorkspaceResumeResponse(BaseModel):
+    session: WorkspaceSummaryResponse
+    snapshot: WorkspaceSnapshotResponse
+    feature_states: dict[str, Any] = Field(default_factory=dict)
+    assets: dict[str, WorkspaceAssetInfo] = Field(default_factory=dict)

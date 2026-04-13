@@ -180,18 +180,43 @@ export function downloadImage(uri: string, name: string) {
 }
 
 export function mouseXY(ev: SyntheticEvent) {
+  const canvas = ev.currentTarget as HTMLCanvasElement | null
+  const nativeEvent = ev.nativeEvent as MouseEvent | TouchEvent
+
+  if (!canvas) {
     const mouseEvent = ev.nativeEvent as MouseEvent
-    // Handle mask drawing coordinate on mobile/tablet devices
-    if ('touches' in ev) {
-        const rect = (ev.target as HTMLCanvasElement).getBoundingClientRect();
-        const touches = ev.touches as (Touch & { target: HTMLCanvasElement })[]
-        const touch = touches[0]
-        return {
-            x: (touch.clientX - rect.x) / rect.width * touch.target.offsetWidth,
-            y: (touch.clientY - rect.y) / rect.height * touch.target.offsetHeight,
-        }
-    }
-    return {x: mouseEvent.offsetX, y: mouseEvent.offsetY}
+    return { x: mouseEvent.offsetX, y: mouseEvent.offsetY }
+  }
+
+  const rect = canvas.getBoundingClientRect()
+  if (rect.width === 0 || rect.height === 0) {
+    return { x: 0, y: 0 }
+  }
+
+  let clientX: number
+  let clientY: number
+
+  if ("touches" in nativeEvent && nativeEvent.touches.length > 0) {
+    clientX = nativeEvent.touches[0].clientX
+    clientY = nativeEvent.touches[0].clientY
+  } else if (
+    "changedTouches" in nativeEvent &&
+    nativeEvent.changedTouches.length > 0
+  ) {
+    clientX = nativeEvent.changedTouches[0].clientX
+    clientY = nativeEvent.changedTouches[0].clientY
+  } else {
+    const mouseEvent = nativeEvent as MouseEvent
+    clientX = mouseEvent.clientX
+    clientY = mouseEvent.clientY
+  }
+
+  const x = ((clientX - rect.left) / rect.width) * canvas.width
+  const y = ((clientY - rect.top) / rect.height) * canvas.height
+  return {
+    x: Math.min(Math.max(x, 0), canvas.width),
+    y: Math.min(Math.max(y, 0), canvas.height),
+  }
 }
 
 export function drawLines(

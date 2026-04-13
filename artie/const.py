@@ -28,6 +28,7 @@ AVAILABLE_MODELS = ["lama", "ldm", "zits", "mat", "fcf", "manga", "cv2", "migan"
 SDXL_BASE_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
 REPAINT_MODEL = POWERPAINT_NAME
 TXT2IMG_JUGGERNAUT_MODEL = "RunDiffusion/Juggernaut-XI-v11"
+REMOVE_BG_RMBG_MODEL = "briaai/RMBG-1.4"
 
 # 启动时必须下载的模型列表（按顺序下载）
 REQUIRED_MODELS = [
@@ -35,6 +36,7 @@ REQUIRED_MODELS = [
     SDXL_BASE_MODEL,     # 文生图（原生 4-channel UNet）
     REPAINT_MODEL,       # AI 重绘 / 外扩（PowerPaint）
     TXT2IMG_JUGGERNAUT_MODEL,  # 文生图（Juggernaut XI）
+    REMOVE_BG_RMBG_MODEL,  # 去背景（BRIA RMBG 1.4）
 ]
 DIFFUSION_MODELS = [
     "runwayml/stable-diffusion-inpainting",

@@ -1,13 +1,15 @@
 import {
   Filename,
   GenInfo,
-  ImageInfo,
   ModelInfo,
   PowerPaintTask,
-  ProjectInfo,
   Rect,
   ServerConfig,
   UserInfo,
+  WorkspaceAssetUpload,
+  WorkspaceDetail,
+  WorkspaceResumePayload,
+  WorkspaceSummary,
 } from "@/lib/types"
 import { Settings } from "@/lib/states"
 import { convertToBase64, srcToFile } from "@/lib/utils"
@@ -32,6 +34,14 @@ export function getAuthToken(): string | null {
   return _authToken
 }
 
+function buildAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = { ...extra }
+  if (_authToken) {
+    headers["Authorization"] = `Bearer ${_authToken}`
+  }
+  return headers
+}
+
 const api = axios.create({
   baseURL: API_ENDPOINT,
 })
@@ -54,7 +64,8 @@ export default async function inpaint(
   croperRect: Rect,
   extenderState: Rect,
   mask: File | Blob,
-  paintByExampleImage: File | null = null
+  paintByExampleImage: File | null = null,
+  sessionId?: string
 ) {
   const imageBase64 = await convertToBase64(imageFile)
   const maskBase64 = await convertToBase64(mask)
@@ -67,10 +78,11 @@ export default async function inpaint(
 
   const res = await fetch(`${API_ENDPOINT}/inpaint`, {
     method: "POST",
-    headers: {
+    headers: buildAuthHeaders({
       "Content-Type": "application/json",
-    },
+    }),
     body: JSON.stringify({
+      session_id: sessionId,
       image: imageBase64,
       mask: maskBase64,
       ldm_steps: settings.ldmSteps,
@@ -156,16 +168,18 @@ export async function runPlugin(
   name: string,
   imageFile: File,
   upscale?: number,
-  clicks?: number[][]
+  clicks?: number[][],
+  sessionId?: string
 ) {
   const imageBase64 = await convertToBase64(imageFile)
   const p = genMask ? "run_plugin_gen_mask" : "run_plugin_gen_image"
   const res = await fetch(`${API_ENDPOINT}/${p}`, {
     method: "POST",
-    headers: {
+    headers: buildAuthHeaders({
       "Content-Type": "application/json",
-    },
+    }),
     body: JSON.stringify({
+      session_id: sessionId,
       name,
       image: imageBase64,
       scale: upscale,
@@ -186,6 +200,7 @@ export async function getMediaFile(tab: string, filename: string) {
     )}`,
     {
       method: "GET",
+      headers: buildAuthHeaders(),
     }
   )
   if (res.ok) {
@@ -205,6 +220,7 @@ export async function getMediaBlob(tab: string, filename: string) {
     )}`,
     {
       method: "GET",
+      headers: buildAuthHeaders(),
     }
   )
   if (res.ok) {
@@ -231,6 +247,7 @@ export async function downloadToOutput(
   try {
     const res = await fetch(`${API_ENDPOINT}/save_image`, {
       method: "POST",
+      headers: buildAuthHeaders(),
       body: fd,
     })
     if (!res.ok) {
@@ -257,6 +274,7 @@ export interface Txt2ImgParams {
   prompt: string
   negativePrompt: string
   modelName?: string
+  sessionId?: string
   width: number
   height: number
   steps: number
@@ -270,10 +288,11 @@ export interface Txt2ImgParams {
 export async function txt2img(params: Txt2ImgParams) {
   const res = await fetch(`${API_ENDPOINT}/txt2img`, {
     method: "POST",
-    headers: {
+    headers: buildAuthHeaders({
       "Content-Type": "application/json",
-    },
+    }),
     body: JSON.stringify({
+      session_id: params.sessionId,
       prompt: params.prompt,
       negative_prompt: params.negativePrompt,
       model_name: params.modelName,
@@ -312,9 +331,9 @@ export async function postAdjustMask(
   const maskBase64 = await convertToBase64(mask)
   const res = await fetch(`${API_ENDPOINT}/adjust_mask`, {
     method: "POST",
-    headers: {
+    headers: buildAuthHeaders({
       "Content-Type": "application/json",
-    },
+    }),
     body: JSON.stringify({
       mask: maskBase64,
       operate: operate,
@@ -359,50 +378,64 @@ export async function getVramStatus() {
   return res.data
 }
 
-// ---------------------------------------------------------------------------
-// Project API
-// ---------------------------------------------------------------------------
-
-export async function getProjects(): Promise<ProjectInfo[]> {
-  const res = await api.get("/projects")
-  return res.data
-}
-
-export async function createProject(
-  name: string,
-  description: string = ""
-): Promise<ProjectInfo> {
-  const res = await api.post("/projects", { name, description })
-  return res.data
-}
-
-export async function deleteProject(projectId: string): Promise<void> {
-  await api.delete(`/projects/${projectId}`)
-}
-
-// ---------------------------------------------------------------------------
-// Image API
-// ---------------------------------------------------------------------------
-
-export async function getImages(
-  projectId?: string,
-  imageType?: string,
-  skip = 0,
-  limit = 50
-): Promise<ImageInfo[]> {
-  const params: Record<string, any> = { skip, limit }
-  if (projectId) params.project_id = projectId
-  if (imageType) params.image_type = imageType
-  const res = await api.get("/images", { params })
-  return res.data
-}
-
-export function getImageFileUrl(imageId: string): string {
+export function getAssetFileUrl(assetId: string): string {
   const token = getAuthToken()
-  const base = `${API_ENDPOINT}/images/${imageId}/file`
+  const base = `${API_ENDPOINT}/assets/${assetId}/file`
   return token ? `${base}?token=${token}` : base
 }
 
-export async function deleteImage(imageId: string): Promise<void> {
-  await api.delete(`/images/${imageId}`)
+export async function listWorkspaces(
+  search?: string,
+  feature?: string
+): Promise<WorkspaceSummary[]> {
+  const res = await api.get("/workspaces", {
+    params: {
+      ...(search ? { search } : {}),
+      ...(feature ? { feature } : {}),
+    },
+  })
+  return res.data
+}
+
+export async function saveWorkspace(payload: {
+  session_id?: string | null
+  title?: string
+  active_tab: string
+  settings_by_feature: Record<string, any>
+  workspace_state: Record<string, any>
+  assets: WorkspaceAssetUpload[]
+}): Promise<WorkspaceDetail> {
+  const res = await api.post("/workspaces/save", payload)
+  return res.data
+}
+
+export async function getWorkspaceDetail(id: string): Promise<WorkspaceDetail> {
+  const res = await api.get(`/workspaces/${id}`)
+  return res.data
+}
+
+export async function resumeWorkspace(id: string): Promise<WorkspaceResumePayload> {
+  const res = await api.post(`/workspaces/${id}/resume`)
+  return res.data
+}
+
+export async function deleteWorkspace(id: string): Promise<void> {
+  await api.delete(`/workspaces/${id}`)
+}
+
+export async function listWorkspaceOperations(id: string) {
+  const res = await api.get(`/workspaces/${id}/operations`)
+  return res.data
+}
+
+export async function importWorkspaceFile(
+  file: File,
+  title?: string
+): Promise<{ id: string; name: string; session_id: string; asset_id: string; created_at: string }> {
+  const fd = new FormData()
+  fd.append("file", file)
+  const res = await api.post("/workspaces/import", fd, {
+    params: title ? { title } : undefined,
+  })
+  return res.data
 }

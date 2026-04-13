@@ -354,7 +354,11 @@ export default function Editor(props: EditorProps) {
 
   const onMouseMove = (ev: SyntheticEvent) => {
     const mouseEvent = ev.nativeEvent as MouseEvent
-    setCoords({ x: mouseEvent.pageX, y: mouseEvent.pageY })
+    const rect = (ev.currentTarget as HTMLDivElement).getBoundingClientRect()
+    setCoords({
+      x: mouseEvent.clientX - rect.left,
+      y: mouseEvent.clientY - rect.top,
+    })
   }
 
   const onMouseDrag = (ev: SyntheticEvent) => {
@@ -443,10 +447,12 @@ export default function Editor(props: EditorProps) {
     if (interactiveSegState.isInteractiveSeg) {
       const xy = mouseXY(ev)
       const newClicks: number[][] = [...interactiveSegState.clicks]
+      const clickX = Math.round(xy.x)
+      const clickY = Math.round(xy.y)
       if (isRightClick(ev)) {
-        newClicks.push([xy.x, xy.y, 0, newClicks.length])
+        newClicks.push([clickX, clickY, 0, newClicks.length])
       } else {
-        newClicks.push([xy.x, xy.y, 1, newClicks.length])
+        newClicks.push([clickX, clickY, 1, newClicks.length])
       }
       runInteractiveSeg(newClicks)
       updateInteractiveSegState({ clicks: newClicks })
@@ -910,7 +916,7 @@ export default function Editor(props: EditorProps) {
 
   return (
     <div
-      className="flex w-screen h-screen justify-center items-center"
+      className="relative flex w-screen h-screen justify-center items-center"
       aria-hidden="true"
       onMouseMove={onMouseMove}
       onMouseUp={onPointerUp}

@@ -27,31 +27,51 @@ def build_plugins(
     enable_restoreformer: bool,
     restoreformer_device: Device,
     no_half: bool,
+    local_files_only: bool = False,
 ) -> Dict:
     plugins = {}
+
+    def try_init(name: str, factory):
+        try:
+            plugins[name] = factory()
+        except Exception as e:
+            logger.warning(f"Skip plugin {name}: {e}")
+
     if enable_interactive_seg:
         logger.info(f"Initialize {InteractiveSeg.name} plugin")
-        plugins[InteractiveSeg.name] = InteractiveSeg(
-            interactive_seg_model, interactive_seg_device
+        try_init(
+            InteractiveSeg.name,
+            lambda: InteractiveSeg(interactive_seg_model, interactive_seg_device),
         )
 
     if enable_remove_bg:
         logger.info(f"Initialize {RemoveBG.name} plugin")
-        plugins[RemoveBG.name] = RemoveBG(remove_bg_model, remove_bg_device)
+        try_init(
+            RemoveBG.name,
+            lambda: RemoveBG(
+                remove_bg_model,
+                remove_bg_device,
+                local_files_only=local_files_only,
+            ),
+        )
 
     if enable_anime_seg:
         logger.info(f"Initialize {AnimeSeg.name} plugin")
-        plugins[AnimeSeg.name] = AnimeSeg()
+        try_init(AnimeSeg.name, lambda: AnimeSeg())
 
     if enable_realesrgan:
         logger.info(
             f"Initialize {RealESRGANUpscaler.name} plugin: {realesrgan_model}, {realesrgan_device}"
         )
-        plugins[RealESRGANUpscaler.name] = RealESRGANUpscaler(
-            realesrgan_model,
-            realesrgan_device,
-            no_half=no_half,
+        try_init(
+            RealESRGANUpscaler.name,
+            lambda: RealESRGANUpscaler(
+                realesrgan_model,
+                realesrgan_device,
+                no_half=no_half,
+            ),
         )
+        
 
     if enable_gfpgan:
         logger.info(f"Initialize {GFPGANPlugin.name} plugin")
@@ -61,15 +81,21 @@ def build_plugins(
             logger.info(
                 f"GFPGAN no background upscaler, use --enable-realesrgan to enable it"
             )
-        plugins[GFPGANPlugin.name] = GFPGANPlugin(
-            gfpgan_device,
-            upscaler=plugins.get(RealESRGANUpscaler.name, None),
+        try_init(
+            GFPGANPlugin.name,
+            lambda: GFPGANPlugin(
+                gfpgan_device,
+                upscaler=plugins.get(RealESRGANUpscaler.name, None),
+            ),
         )
 
     if enable_restoreformer:
         logger.info(f"Initialize {RestoreFormerPlugin.name} plugin")
-        plugins[RestoreFormerPlugin.name] = RestoreFormerPlugin(
-            restoreformer_device,
-            upscaler=plugins.get(RealESRGANUpscaler.name, None),
+        try_init(
+            RestoreFormerPlugin.name,
+            lambda: RestoreFormerPlugin(
+                restoreformer_device,
+                upscaler=plugins.get(RealESRGANUpscaler.name, None),
+            ),
         )
     return plugins

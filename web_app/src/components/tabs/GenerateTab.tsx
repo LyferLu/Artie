@@ -45,20 +45,24 @@ const GenerateTab = () => {
     settings,
     serverConfig,
     generatedImages,
+    selectedGeneratedImageIndex,
     isGenerating,
     updateSettings,
     runTxt2Img,
     clearGeneratedImages,
     sendToTab,
+    selectGeneratedImage,
   ] = useStore((state) => [
     state.settings,
     state.serverConfig,
     state.generatedImages,
+    state.selectedGeneratedImageIndex,
     state.isGenerating,
     state.updateSettings,
     state.runTxt2Img,
     state.clearGeneratedImages,
     state.sendToTab,
+    state.selectGeneratedImage,
   ])
 
   const promptRef = useRef<HTMLTextAreaElement>(null)
@@ -474,7 +478,16 @@ const GenerateTab = () => {
             {generatedImages.map((img, idx) => {
               const aspectRatio = settings.txt2imgWidth / settings.txt2imgHeight
               return (
-                <div key={idx} className="flex flex-col gap-2 rounded-xl border border-border bg-card overflow-hidden">
+                <div
+                  key={idx}
+                  className={cn(
+                    "flex flex-col gap-2 rounded-xl border bg-card overflow-hidden cursor-pointer",
+                    selectedGeneratedImageIndex === idx
+                      ? "border-primary ring-1 ring-primary/40"
+                      : "border-border"
+                  )}
+                  onClick={() => selectGeneratedImage(idx)}
+                >
                   {/* Image */}
                   <div
                     className="relative bg-muted w-full"

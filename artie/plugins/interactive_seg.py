@@ -128,10 +128,12 @@ class InteractiveSeg(BasePlugin):
         input_point = []
         input_label = []
         for click in clicks:
-            x = click[0]
-            y = click[1]
+            if len(click) < 3:
+                continue
+            x = float(click[0])
+            y = float(click[1])
             input_point.append([x, y])
-            input_label.append(click[2])
+            input_label.append(int(round(click[2])))
 
         if img_md5 and img_md5 != self.prev_img_md5:
             self.prev_img_md5 = img_md5

@@ -4,7 +4,7 @@ import os
 from functools import lru_cache
 from typing import List, Optional
 
-from artie.schema import ModelType, ModelInfo
+from artie.schema import ModelType, ModelInfo, RemoveBGModel
 from loguru import logger
 from pathlib import Path
 
@@ -15,6 +15,7 @@ from artie.const import (
     DIFFUSERS_SDXL_CLASS_NAME,
     DIFFUSERS_SDXL_INPAINT_CLASS_NAME,
     ANYTEXT_NAME,
+    REMOVE_BG_RMBG_MODEL,
 )
 from artie.model.original_sd_configs import get_config_files
 
@@ -72,6 +73,12 @@ def cli_download_model(model: str):
         logger.info(f"Downloading {model}...")
         models[model].download()
         logger.info("Done.")
+    elif model == RemoveBGModel.briaai_rmbg_1_4:
+        logger.info(f"Downloading model from Huggingface: {model}")
+        from huggingface_hub import hf_hub_download
+
+        downloaded_path = hf_hub_download(model, "model.pth")
+        logger.info(f"Done. Downloaded to {downloaded_path}")
     else:
         logger.info(f"Downloading model from Huggingface: {model}")
         from diffusers import DiffusionPipeline
@@ -381,6 +388,26 @@ def scan_models() -> List[ModelInfo]:
     return available_models
 
 
+def _is_rmbg_1_4_downloaded() -> bool:
+    from huggingface_hub import hf_hub_download
+
+    try:
+        model_path = hf_hub_download(
+            REMOVE_BG_RMBG_MODEL,
+            "model.pth",
+            local_files_only=True,
+        )
+    except Exception:
+        return False
+    return Path(model_path).exists()
+
+
+def _is_required_model_ready(model_name: str, scanned_names: set[str]) -> bool:
+    if model_name == RemoveBGModel.briaai_rmbg_1_4:
+        return _is_rmbg_1_4_downloaded()
+    return model_name in scanned_names
+
+
 def ensure_all_models_downloaded():
     """检测并下载所有必需模型，首次运行时自动完成。"""
     from artie.const import REQUIRED_MODELS
@@ -388,14 +415,14 @@ def ensure_all_models_downloaded():
     scanned = scan_models()
     scanned_names = {it.name for it in scanned}
 
-    all_ready = all(name in scanned_names for name in REQUIRED_MODELS)
+    all_ready = all(_is_required_model_ready(name, scanned_names) for name in REQUIRED_MODELS)
     if all_ready:
         logger.info("所有必需模型已就绪，跳过下载。")
         return
 
     logger.info("首次初始化：检查并下载缺失的必需模型...")
     for name in REQUIRED_MODELS:
-        if name not in scanned_names:
+        if not _is_required_model_ready(name, scanned_names):
             logger.info(f"  下载模型: {name}")
             try:
                 cli_download_model(name)
@@ -410,6 +437,7 @@ def ensure_all_models_downloaded():
                     ) from e
                 raise
             logger.info(f"  完成: {name}")
+            scanned_names.add(name)
         else:
             logger.info(f"  已就绪: {name}")
     logger.info("所有必需模型已准备完毕。")

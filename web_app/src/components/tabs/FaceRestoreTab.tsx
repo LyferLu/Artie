@@ -1,40 +1,63 @@
 import { useState } from "react"
 import { useStore } from "@/lib/states"
-import { Button } from "../ui/button"
+import { Button, ImageUploadButton } from "../ui/button"
 import { Label } from "../ui/label"
-import { ImageUploadButton } from "../ui/button"
 import { Loader2, Image as ImageIcon, Download, Pencil, Scissors, Zap } from "lucide-react"
 import { useToast } from "../ui/use-toast"
 import { PluginName, PluginInfo, WorkspaceTab } from "@/lib/types"
 import { runPlugin } from "@/lib/api"
 
 const FaceRestoreTab = () => {
-  const [plugins, workingImage, setWorkingImage, sendToTab, serverConfig] = useStore((state) => [
+  const [
+    plugins,
+    faceRestoreState,
+    setFeatureSourceImage,
+    setFeatureResultImage,
+    setFeatureSelectedModel,
+    sendToTab,
+    serverConfig,
+    clearCurrentWorkspace,
+    currentWorkspaceSessionId,
+  ] = useStore((state) => [
     state.serverConfig.plugins,
-    state.workingImage,
-    state.setWorkingImage,
+    state.faceRestoreState,
+    state.setFeatureSourceImage,
+    state.setFeatureResultImage,
+    state.setFeatureSelectedModel,
     state.sendToTab,
     state.serverConfig,
+    state.clearCurrentWorkspace,
+    state.currentWorkspaceSessionId,
   ])
   const { toast } = useToast()
+  const [isProcessing, setIsProcessing] = useState(false)
 
   const hasGFPGAN = plugins.some((p: PluginInfo) => p.name === PluginName.GFPGAN)
   const hasRestoreFormer = plugins.some((p: PluginInfo) => p.name === PluginName.RestoreFormer)
-
-  const [resultUrl, setResultUrl] = useState<string | null>(null)
-  const [isProcessing, setIsProcessing] = useState(false)
+  const sourceImage = faceRestoreState.sourceImage
+  const resultImage = faceRestoreState.resultImage
 
   const handleFileUpload = (file: File) => {
-    setWorkingImage(file)
-    setResultUrl(null)
+    clearCurrentWorkspace()
+    setFeatureSourceImage(WorkspaceTab.FACE_RESTORE, file)
   }
 
   const handleRestore = async (pluginName: string) => {
-    if (!workingImage) return
+    if (!sourceImage) return
     setIsProcessing(true)
     try {
-      const res = await runPlugin(false, pluginName, workingImage.file)
-      setResultUrl(res.blob)
+      const res = await runPlugin(
+        false,
+        pluginName,
+        sourceImage.file,
+        undefined,
+        undefined,
+        currentWorkspaceSessionId ?? undefined
+      )
+      const blob = await fetch(res.blob).then((r) => r.blob())
+      const file = new File([blob], "face_restored.png", { type: blob.type || "image/png" })
+      setFeatureSelectedModel(WorkspaceTab.FACE_RESTORE, pluginName)
+      setFeatureResultImage(WorkspaceTab.FACE_RESTORE, file)
     } catch (e: any) {
       toast({
         variant: "destructive",
@@ -46,9 +69,9 @@ const FaceRestoreTab = () => {
   }
 
   const handleDownload = () => {
-    if (!resultUrl) return
+    if (!resultImage) return
     const a = document.createElement("a")
-    a.href = resultUrl
+    a.href = resultImage.url
     a.download = "face_restored.png"
     a.click()
   }
@@ -71,12 +94,12 @@ const FaceRestoreTab = () => {
         上传图片
       </ImageUploadButton>
 
-      {workingImage && (
+      {sourceImage && (
         <div className="grid grid-cols-2 gap-4">
           <div className="flex flex-col gap-1.5">
             <Label className="text-sm text-muted-foreground">原图</Label>
             <img
-              src={workingImage.url}
+              src={sourceImage.url}
               alt="Source"
               className="rounded-lg border border-border object-contain max-h-[400px]"
             />
@@ -84,8 +107,8 @@ const FaceRestoreTab = () => {
           <div className="flex flex-col gap-1.5">
             <Label className="text-sm text-muted-foreground">修复结果</Label>
             <div className="rounded-lg border border-border bg-muted/30 flex items-center justify-center min-h-[200px]">
-              {resultUrl ? (
-                <img src={resultUrl} alt="Result" className="max-h-[400px] object-contain" />
+              {resultImage ? (
+                <img src={resultImage.url} alt="Result" className="max-h-[400px] object-contain" />
               ) : (
                 <span className="text-muted-foreground text-sm">结果将显示在此处</span>
               )}
@@ -96,11 +119,7 @@ const FaceRestoreTab = () => {
 
       <div className="flex gap-2 flex-wrap">
         {hasGFPGAN && (
-          <Button
-            className="flex-1 gap-2"
-            onClick={() => handleRestore(PluginName.GFPGAN)}
-            disabled={!workingImage || isProcessing}
-          >
+          <Button className="flex-1 gap-2" onClick={() => handleRestore(PluginName.GFPGAN)} disabled={!sourceImage || isProcessing}>
             {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
             {isProcessing ? "处理中…" : "GFPGAN"}
           </Button>
@@ -110,13 +129,13 @@ const FaceRestoreTab = () => {
             className="flex-1 gap-2"
             variant="outline"
             onClick={() => handleRestore(PluginName.RestoreFormer)}
-            disabled={!workingImage || isProcessing}
+            disabled={!sourceImage || isProcessing}
           >
             {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
             {isProcessing ? "处理中…" : "RestoreFormer"}
           </Button>
         )}
-        {resultUrl && (
+        {resultImage && (
           <Button variant="ghost" onClick={handleDownload} className="gap-2">
             <Download className="h-4 w-4" />
             下载
@@ -124,7 +143,7 @@ const FaceRestoreTab = () => {
         )}
       </div>
 
-      {resultUrl && (
+      {resultImage && (
         <div className="flex flex-col gap-2">
           <Label className="text-sm text-muted-foreground">发送结果到</Label>
           <div className="flex gap-2 flex-wrap">
@@ -132,7 +151,7 @@ const FaceRestoreTab = () => {
               size="sm"
               variant="secondary"
               className="gap-1.5 text-xs h-7"
-              onClick={() => sendToTab(resultUrl, WorkspaceTab.INPAINT)}
+              onClick={() => sendToTab(resultImage.url, WorkspaceTab.INPAINT)}
             >
               <Pencil className="h-3 w-3" />
               AI 修复
@@ -142,7 +161,7 @@ const FaceRestoreTab = () => {
                 size="sm"
                 variant="secondary"
                 className="gap-1.5 text-xs h-7"
-                onClick={() => sendToTab(resultUrl, WorkspaceTab.SUPER_RES)}
+                onClick={() => sendToTab(resultImage.url, WorkspaceTab.SUPER_RES)}
               >
                 <Zap className="h-3 w-3" />
                 AI 超分
@@ -153,7 +172,7 @@ const FaceRestoreTab = () => {
                 size="sm"
                 variant="secondary"
                 className="gap-1.5 text-xs h-7"
-                onClick={() => sendToTab(resultUrl, WorkspaceTab.REMOVE_BG)}
+                onClick={() => sendToTab(resultImage.url, WorkspaceTab.REMOVE_BG)}
               >
                 <Scissors className="h-3 w-3" />
                 AI 去背景

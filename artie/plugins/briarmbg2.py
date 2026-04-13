@@ -2921,8 +2921,11 @@ class SimpleConvs(nn.Module):
         return self.conv_out(self.conv1(x))
 
 
-def create_briarmbg2_session():
-    birefnet = BiRefNet.from_pretrained("briaai/RMBG-2.0")
+def create_briarmbg2_session(local_files_only: bool = False):
+    birefnet = BiRefNet.from_pretrained(
+        "briaai/RMBG-2.0",
+        local_files_only=local_files_only,
+    )
     return birefnet
 
 
