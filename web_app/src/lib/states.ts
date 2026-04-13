@@ -87,6 +87,7 @@ type ImageRef = {
 type GeneratedImage = {
   url: string
   seed: string
+  file?: File
 }
 
 type FeatureResultTab =
@@ -1274,12 +1275,25 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           WorkspaceTab.AI_REPAINT,
           WorkspaceTab.GENERATE,
         ]
+
+        set((state) => {
+          state.file = file
+          state.interactiveSegState = castDraft(
+            defaultValues.interactiveSegState
+          )
+          state.editorState = castDraft(defaultValues.editorState)
+          state.cropperState = defaultValues.cropperState
+        })
+
         if (
           get().settings.enableAutoExtractPrompt &&
           autoPromptTabs.includes(get().activeTab)
         ) {
           try {
             const res = await getGenInfo(file)
+            if (get().file !== file) {
+              return
+            }
             if (res.prompt) {
               get().updateSettings({ prompt: res.prompt })
             }
@@ -1293,14 +1307,6 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             })
           }
         }
-        set((state) => {
-          state.file = file
-          state.interactiveSegState = castDraft(
-            defaultValues.interactiveSegState
-          )
-          state.editorState = castDraft(defaultValues.editorState)
-          state.cropperState = defaultValues.cropperState
-        })
       },
 
       setCustomFile: (file: File) =>
@@ -1535,6 +1541,9 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             if (!selected) {
               return get().workingImage?.file ?? null
             }
+            if (selected.file) {
+              return selected.file
+            }
             const response = await fetch(selected.url)
             const blob = await response.blob()
             return new File([blob], "generated.png", {
@@ -1679,6 +1688,11 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
         set((state) => {
           state.selectedGeneratedImageIndex = index
         })
+
+        const selected = get().generatedImages[index]
+        if (selected?.file) {
+          get().setWorkingImage(selected.file)
+        }
       },
 
       sendToTab: async (blobUrl: string, tab: WorkspaceTab) => {
@@ -1869,13 +1883,21 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             enableLCMLora: settings.enableLCMLora,
           })
           if (result) {
+            const response = await fetch(result.blob)
+            const blob = await response.blob()
+            const file = new File([blob], "generated.png", {
+              type: blob.type || "image/png",
+            })
+
             set((state) => {
               state.generatedImages.unshift({
                 url: result.blob,
                 seed: result.seed ?? "0",
+                file,
               })
               state.selectedGeneratedImageIndex = 0
             })
+            get().setWorkingImage(file)
           }
         } catch (e: any) {
           toast({
@@ -1957,9 +1979,15 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             if (!selected) {
               throw new Error("当前没有可保存的文生图结果")
             }
-            const res = await fetch(selected.url)
-            const blob = await res.blob()
-            const file = new File([blob], "generated.png", { type: "image/png" })
+            const file =
+              selected.file ??
+              (await (async () => {
+                const res = await fetch(selected.url)
+                const blob = await res.blob()
+                return new File([blob], "generated.png", {
+                  type: blob.type || "image/png",
+                })
+              })())
             await pushFileAsset(file, "primary", "generated", "generated")
             await pushFileAsset(file, "preview", "preview", "preview")
           } else if (
@@ -2149,7 +2177,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           if (file) {
             const imageRef = makeImageRef(file)
             set((state) => {
-              state.generatedImages = [{ url: imageRef.url, seed: "" }]
+              state.generatedImages = [{ url: imageRef.url, seed: "", file }]
               state.selectedGeneratedImageIndex = 0
               revokeImageRef(state.workingImage)
               state.workingImage = castDraft(imageRef)
