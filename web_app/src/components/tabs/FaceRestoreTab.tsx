@@ -1,11 +1,16 @@
 import { useState } from "react"
 import { useStore } from "@/lib/states"
-import { Button, ImageUploadButton } from "../ui/button"
+import { Button } from "../ui/button"
 import { Label } from "../ui/label"
-import { Loader2, Image as ImageIcon, Download, Pencil, Scissors, Zap } from "lucide-react"
+import {
+  Loader2,
+  Image as ImageIcon,
+  Download,
+} from "lucide-react"
 import { useToast } from "../ui/use-toast"
 import { PluginName, PluginInfo, WorkspaceTab } from "@/lib/types"
 import { runPlugin } from "@/lib/api"
+import ImageDropzone from "../ImageDropzone"
 
 const FaceRestoreTab = () => {
   const [
@@ -14,8 +19,6 @@ const FaceRestoreTab = () => {
     setFeatureSourceImage,
     setFeatureResultImage,
     setFeatureSelectedModel,
-    sendToTab,
-    serverConfig,
     clearCurrentWorkspace,
     currentWorkspaceSessionId,
   ] = useStore((state) => [
@@ -24,8 +27,6 @@ const FaceRestoreTab = () => {
     state.setFeatureSourceImage,
     state.setFeatureResultImage,
     state.setFeatureSelectedModel,
-    state.sendToTab,
-    state.serverConfig,
     state.clearCurrentWorkspace,
     state.currentWorkspaceSessionId,
   ])
@@ -76,9 +77,6 @@ const FaceRestoreTab = () => {
     a.click()
   }
 
-  const hasRemoveBG = serverConfig.plugins.some((p) => p.name === PluginName.RemoveBG)
-  const hasRealESRGAN = serverConfig.plugins.some((p) => p.name === PluginName.RealESRGAN)
-
   if (!hasGFPGAN && !hasRestoreFormer) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -89,10 +87,7 @@ const FaceRestoreTab = () => {
 
   return (
     <div className="flex flex-col h-full w-full max-w-3xl mx-auto px-6 py-6 gap-6">
-      <ImageUploadButton tooltip="上传图片" onFileUpload={handleFileUpload}>
-        <ImageIcon className="h-4 w-4 mr-2" />
-        上传图片
-      </ImageUploadButton>
+      {!sourceImage ? <ImageDropzone onSelection={handleFileUpload} /> : null}
 
       {sourceImage && (
         <div className="grid grid-cols-2 gap-4">
@@ -142,45 +137,6 @@ const FaceRestoreTab = () => {
           </Button>
         )}
       </div>
-
-      {resultImage && (
-        <div className="flex flex-col gap-2">
-          <Label className="text-sm text-muted-foreground">发送结果到</Label>
-          <div className="flex gap-2 flex-wrap">
-            <Button
-              size="sm"
-              variant="secondary"
-              className="gap-1.5 text-xs h-7"
-              onClick={() => sendToTab(resultImage.url, WorkspaceTab.INPAINT)}
-            >
-              <Pencil className="h-3 w-3" />
-              AI 修复
-            </Button>
-            {hasRealESRGAN && (
-              <Button
-                size="sm"
-                variant="secondary"
-                className="gap-1.5 text-xs h-7"
-                onClick={() => sendToTab(resultImage.url, WorkspaceTab.SUPER_RES)}
-              >
-                <Zap className="h-3 w-3" />
-                AI 超分
-              </Button>
-            )}
-            {hasRemoveBG && (
-              <Button
-                size="sm"
-                variant="secondary"
-                className="gap-1.5 text-xs h-7"
-                onClick={() => sendToTab(resultImage.url, WorkspaceTab.REMOVE_BG)}
-              >
-                <Scissors className="h-3 w-3" />
-                AI 去背景
-              </Button>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

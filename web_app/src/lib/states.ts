@@ -510,6 +510,8 @@ const FEATURE_RESULT_TABS = [
   WorkspaceTab.FACE_RESTORE,
 ]
 
+const GENERATE_SOURCE_TABS = [WorkspaceTab.GENERATE]
+
 const defaultValues: AppState = {
   file: null,
   paintByExampleFile: null,
@@ -1455,6 +1457,15 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
 
       setActiveTab: (tab: WorkspaceTab) => {
         const prevTab = get().activeTab
+        const shouldSyncToFeatureTab =
+          prevTab !== tab && FEATURE_RESULT_TABS.includes(tab)
+        const shouldSyncToEditorTab =
+          prevTab !== tab &&
+          EDITOR_TABS.includes(tab) &&
+          (FEATURE_RESULT_TABS.includes(prevTab) ||
+            GENERATE_SOURCE_TABS.includes(prevTab))
+        const shouldSyncImageOnTabSwitch =
+          shouldSyncToFeatureTab || shouldSyncToEditorTab
 
         const resolveCurrentTabImage = async (): Promise<File | null> => {
           if (EDITOR_TABS.includes(prevTab)) {
@@ -1540,14 +1551,7 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           }
         }
 
-        set((state) => {
-            state.settingsByFeature[prevTab] = castDraft(
-              cloneSettings(state.settings)
-            )
-            state.activeTab = tab
-        })
-
-        if (prevTab !== tab && FEATURE_RESULT_TABS.includes(tab)) {
+        if (shouldSyncImageOnTabSwitch) {
           resolveCurrentTabImage()
             .then((sourceFile) => {
               if (!sourceFile) {
@@ -1558,8 +1562,15 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             .catch(console.error)
         }
 
+        set((state) => {
+            state.settingsByFeature[prevTab] = castDraft(
+              cloneSettings(state.settings)
+            )
+            state.activeTab = tab
+        })
+
         // 进入画布标签页时，如果 workingImage 存在且 file 为空，自动加载
-        if (EDITOR_TABS.includes(tab)) {
+        if (EDITOR_TABS.includes(tab) && !shouldSyncToEditorTab) {
           const wi = get().workingImage
           if (wi && !get().file) {
             get().setFile(wi.file)
