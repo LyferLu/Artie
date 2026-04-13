@@ -142,8 +142,9 @@ const GenerateTab = () => {
     }
 
     setShowGenerateConfirm(false)
+    resetWorkspaceForNewGeneration()
     runTxt2Img()
-  }, [runTxt2Img, saveWorkspace])
+  }, [resetWorkspaceForNewGeneration, runTxt2Img, saveWorkspace])
 
   const handleGenerateWithoutSaving = useCallback(() => {
     resetWorkspaceForNewGeneration()
