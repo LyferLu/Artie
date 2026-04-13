@@ -62,6 +62,7 @@ import inpaint, {
   resumeWorkspace as resumeWorkspaceApi,
 } from "./api"
 import { toast } from "@/components/ui/use-toast"
+import axios from "axios"
 
 type FileManagerState = {
   sortBy: SortBy
@@ -2319,13 +2320,35 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             }
           }
 
-          const detail = await saveWorkspaceApi({
-            session_id: state.currentWorkspaceSessionId,
+          const buildSavePayload = (sessionId?: string | null) => ({
+            session_id: sessionId,
             active_tab: activeTab,
             settings_by_feature: state.settingsByFeature,
             workspace_state: workspaceState,
             assets,
           })
+
+          let detail: WorkspaceDetail
+          try {
+            detail = await saveWorkspaceApi(
+              buildSavePayload(state.currentWorkspaceSessionId)
+            )
+          } catch (e: any) {
+            const missingSession =
+              axios.isAxiosError(e) &&
+              e.response?.status === 404 &&
+              state.currentWorkspaceSessionId
+            if (!missingSession) {
+              throw e
+            }
+
+            set((draft) => {
+              draft.currentWorkspaceSessionId = null
+              draft.workspaceDetail = null
+            })
+
+            detail = await saveWorkspaceApi(buildSavePayload(null))
+          }
 
           set((draft) => {
             draft.currentWorkspaceSessionId = detail.session.id
@@ -2531,6 +2554,9 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.workspaceItems = state.workspaceItems.filter((item) => item.id !== id)
           if (state.workspaceDetail?.session.id === id) {
             state.workspaceDetail = null
+          }
+          if (state.currentWorkspaceSessionId === id) {
+            state.currentWorkspaceSessionId = null
           }
         })
       },
