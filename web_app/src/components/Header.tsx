@@ -31,7 +31,7 @@ const Header = () => {
     activeTab,
     isSavingWorkspace,
     hasSavableWorkspaceContent,
-    loadImageForTab,
+    requestReplaceImage,
     setCustomFile,
     runInpainting,
     showPrevMask,
@@ -41,7 +41,6 @@ const Header = () => {
     handleFileManagerMaskSelect,
     logout,
     saveWorkspace,
-    clearCurrentWorkspace,
   ] = useStore((state) => [
     state.file,
     state.customMask,
@@ -56,7 +55,7 @@ const Header = () => {
     state.activeTab,
     state.isSavingWorkspace,
     state.hasSavableWorkspaceContent,
-    state.loadImageForTab,
+    state.requestReplaceImage,
     state.setCustomFile,
     state.runInpainting,
     state.showPrevMask,
@@ -66,7 +65,6 @@ const Header = () => {
     state.handleFileManagerMaskSelect,
     state.logout,
     state.saveWorkspace,
-    state.clearCurrentWorkspace,
   ])
 
   const { toast } = useToast()
@@ -103,8 +101,7 @@ const Header = () => {
         handleFileManagerMaskSelect(maskBlob)
       } else {
         const newFile = await getMediaFile(tab, filename)
-        clearCurrentWorkspace()
-        loadImageForTab(newFile, activeTab)
+        await requestReplaceImage(newFile, activeTab)
       }
     } catch (e: any) {
       toast({
@@ -128,8 +125,7 @@ const Header = () => {
           disabled={isInpainting}
           tooltip="上传图片"
           onFileUpload={(file) => {
-            clearCurrentWorkspace()
-            loadImageForTab(file, activeTab)
+            void requestReplaceImage(file, activeTab)
           }}
         >
           <Image />

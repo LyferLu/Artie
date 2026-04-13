@@ -7,6 +7,16 @@ import Header from "@/components/Header"
 import MainLayout from "@/components/MainLayout"
 import FileSelect from "@/components/FileSelect"
 import AuthPage from "@/components/AuthPage"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Toaster } from "./components/ui/toaster"
 import { useStore } from "./lib/states"
 import { useWindowSize } from "react-use"
@@ -22,12 +32,26 @@ const SUPPORTED_FILE_TYPE = [
 ]
 
 function Home() {
-  const [file, updateAppState, loadImageForTab, activeTab, clearCurrentWorkspace] = useStore((state) => [
+  const [
+    file,
+    updateAppState,
+    activeTab,
+    requestReplaceImage,
+    showReplaceImageConfirm,
+    isSavingWorkspace,
+    confirmReplaceImageWithSave,
+    confirmReplaceImageWithoutSave,
+    cancelReplaceImage,
+  ] = useStore((state) => [
     state.file,
     state.updateAppState,
-    state.loadImageForTab,
     state.activeTab,
-    state.clearCurrentWorkspace,
+    state.requestReplaceImage,
+    state.showReplaceImageConfirm,
+    state.isSavingWorkspace,
+    state.confirmReplaceImageWithSave,
+    state.confirmReplaceImageWithoutSave,
+    state.cancelReplaceImage,
   ])
 
   const userInputImage = useInputImage()
@@ -35,10 +59,9 @@ function Home() {
 
   useEffect(() => {
     if (userInputImage) {
-      clearCurrentWorkspace()
-      loadImageForTab(userInputImage, activeTab)
+      void requestReplaceImage(userInputImage, activeTab)
     }
-  }, [clearCurrentWorkspace, loadImageForTab, userInputImage])
+  }, [activeTab, requestReplaceImage, userInputImage])
 
   useEffect(() => {
     updateAppState({ windowSize })
@@ -71,13 +94,12 @@ function Home() {
       if (event.dataTransfer.files.length === 1) {
         const dragFile = event.dataTransfer.files[0]
         if (SUPPORTED_FILE_TYPE.includes(dragFile.type)) {
-          clearCurrentWorkspace()
-          loadImageForTab(dragFile, activeTab)
+          void requestReplaceImage(dragFile, activeTab)
         }
       }
       event.dataTransfer.clearData()
     }
-  }, [activeTab, clearCurrentWorkspace, loadImageForTab])
+  }, [activeTab, requestReplaceImage])
 
   const onPaste = useCallback((event: any) => {
     if (!event.clipboardData) return
@@ -91,10 +113,9 @@ function Home() {
 
     const blob = items[0].getAsFile()
     if (blob) {
-      clearCurrentWorkspace()
-      loadImageForTab(blob, activeTab)
+      void requestReplaceImage(blob, activeTab)
     }
-  }, [activeTab, clearCurrentWorkspace, loadImageForTab])
+  }, [activeTab, requestReplaceImage])
 
   useEffect(() => {
     window.addEventListener("dragenter", handleDragIn)
@@ -122,13 +143,51 @@ function Home() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-between w-full bg-[radial-gradient(circle_at_1px_1px,_#8e8e8e8e_1px,_transparent_0)] [background-size:20px_20px] bg-repeat">
       <Toaster />
+      <AlertDialog
+        open={showReplaceImageConfirm}
+        onOpenChange={(open) => {
+          if (!open) {
+            cancelReplaceImage()
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>检测到未保存的图片或工作进度</AlertDialogTitle>
+            <AlertDialogDescription>
+              是否先保存之前的图片和工作进度，再上传新的图片？
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSavingWorkspace}>
+              取消
+            </AlertDialogCancel>
+            <AlertDialogCancel
+              disabled={isSavingWorkspace}
+              onClick={() => {
+                void confirmReplaceImageWithoutSave()
+              }}
+            >
+              不保存直接上传
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isSavingWorkspace}
+              onClick={(ev) => {
+                ev.preventDefault()
+                void confirmReplaceImageWithSave()
+              }}
+            >
+              {isSavingWorkspace ? "保存中…" : "保存后上传"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <Header />
       <MainLayout />
       {showFileSelect ? (
         <FileSelect
           onSelection={async (f) => {
-            clearCurrentWorkspace()
-            loadImageForTab(f, activeTab)
+            await requestReplaceImage(f, activeTab)
           }}
         />
       ) : (

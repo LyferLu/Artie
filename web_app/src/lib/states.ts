@@ -229,6 +229,9 @@ type AppState = {
   isGenerating: boolean
   isCancelingTask: boolean
   workspaceDirty: boolean
+  showReplaceImageConfirm: boolean
+  pendingReplaceImage: File | null
+  pendingReplaceTab: WorkspaceTab | null
   // 全局工作图片，所有标签页共享
   workingImage: ImageRef | null
   removeBgState: FeatureResultState
@@ -340,6 +343,10 @@ type AppAction = {
   markWorkspaceDirty: () => void
   resetWorkspaceDirty: () => void
   resetWorkspaceForNewGeneration: () => void
+  requestReplaceImage: (file: File, tab: WorkspaceTab) => Promise<void>
+  confirmReplaceImageWithSave: () => Promise<void>
+  confirmReplaceImageWithoutSave: () => Promise<void>
+  cancelReplaceImage: () => void
   setFeatureSourceImage: (tab: FeatureResultTab, file: File) => void
   setFeatureResultImage: (
     tab: FeatureResultTab,
@@ -672,6 +679,9 @@ const defaultValues: AppState = {
   isGenerating: false,
   isCancelingTask: false,
   workspaceDirty: false,
+  showReplaceImageConfirm: false,
+  pendingReplaceImage: null,
+  pendingReplaceTab: null,
   workingImage: null,
   removeBgState: createEmptyFeatureResultState(),
   superResState: createEmptyFeatureResultState(),
@@ -1812,10 +1822,64 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
           state.isCropperExtenderResizing = false
           state.generatedImages = []
           state.selectedGeneratedImageIndex = 0
+          state.showReplaceImageConfirm = false
+          state.pendingReplaceImage = null
+          state.pendingReplaceTab = null
           state.workingImage = null
           state.currentWorkspaceSessionId = null
           state.workspaceDetail = null
           state.workspaceDirty = false
+        })
+      },
+
+      requestReplaceImage: async (file, tab) => {
+        if (get().hasSavableWorkspaceContent() && get().hasUnsavedWorkspaceChanges()) {
+          set((state) => {
+            state.pendingReplaceImage = file
+            state.pendingReplaceTab = tab
+            state.showReplaceImageConfirm = true
+          })
+          return
+        }
+
+        get().resetWorkspaceForNewGeneration()
+        await get().loadImageForTab(file, tab)
+      },
+
+      confirmReplaceImageWithSave: async () => {
+        const pendingFile = get().pendingReplaceImage
+        const pendingTab = get().pendingReplaceTab
+        if (!pendingFile || pendingTab === null) {
+          get().cancelReplaceImage()
+          return
+        }
+
+        const saved = await get().saveWorkspace()
+        if (!saved) {
+          return
+        }
+
+        get().resetWorkspaceForNewGeneration()
+        await get().loadImageForTab(pendingFile, pendingTab)
+      },
+
+      confirmReplaceImageWithoutSave: async () => {
+        const pendingFile = get().pendingReplaceImage
+        const pendingTab = get().pendingReplaceTab
+        if (!pendingFile || pendingTab === null) {
+          get().cancelReplaceImage()
+          return
+        }
+
+        get().resetWorkspaceForNewGeneration()
+        await get().loadImageForTab(pendingFile, pendingTab)
+      },
+
+      cancelReplaceImage: () => {
+        set((state) => {
+          state.showReplaceImageConfirm = false
+          state.pendingReplaceImage = null
+          state.pendingReplaceTab = null
         })
       },
 
@@ -2085,6 +2149,76 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
             })
           }
 
+          const pushFeatureAssets = async (
+            featureState: FeatureResultState,
+            tab: FeatureResultTab
+          ): Promise<boolean> => {
+            const primary = featureState.resultImage ?? featureState.sourceImage
+            if (!primary) {
+              return false
+            }
+            if (featureState.sourceImage) {
+              await pushFileAsset(
+                featureState.sourceImage.file,
+                "source",
+                "uploaded",
+                "source"
+              )
+            }
+            if (featureState.resultImage) {
+              await pushFileAsset(
+                featureState.resultImage.file,
+                "result",
+                tab,
+                "result"
+              )
+            }
+            await pushFileAsset(primary.file, "primary", tab, "primary")
+            await pushFileAsset(primary.file, "preview", "preview", "preview")
+            return true
+          }
+
+          const pushGenerateFallbackAssets = async (): Promise<boolean> => {
+            if (
+              await pushFeatureAssets(
+                state.removeBgState,
+                WorkspaceTab.REMOVE_BG
+              )
+            ) {
+              return true
+            }
+            if (
+              await pushFeatureAssets(
+                state.superResState,
+                WorkspaceTab.SUPER_RES
+              )
+            ) {
+              return true
+            }
+            if (
+              await pushFeatureAssets(
+                state.faceRestoreState,
+                WorkspaceTab.FACE_RESTORE
+              )
+            ) {
+              return true
+            }
+
+            const primaryFile =
+              state.workingImage?.file ??
+              (state.file ? await state.getCurrentTargetFile() : null)
+            if (!primaryFile) {
+              return false
+            }
+
+            if (state.file) {
+              await pushFileAsset(state.file, "source", "uploaded", "source")
+            }
+            await pushFileAsset(primaryFile, "primary", "uploaded", "primary")
+            await pushFileAsset(primaryFile, "preview", "preview", "preview")
+            return true
+          }
+
           const activeTab = state.activeTab
           const workspaceState: Record<string, any> = {
             cropperState: state.cropperState,
@@ -2106,19 +2240,23 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
               state.generatedImages[state.selectedGeneratedImageIndex] ??
               state.generatedImages[0]
             if (!selected) {
-              throw new Error("当前没有可保存的文生图结果")
+              const hasFallback = await pushGenerateFallbackAssets()
+              if (!hasFallback) {
+                throw new Error("当前没有可保存的图片")
+              }
+            } else {
+              const file =
+                selected.file ??
+                (await (async () => {
+                  const res = await fetch(selected.url)
+                  const blob = await res.blob()
+                  return new File([blob], "generated.png", {
+                    type: blob.type || "image/png",
+                  })
+                })())
+              await pushFileAsset(file, "primary", "generated", "generated")
+              await pushFileAsset(file, "preview", "preview", "preview")
             }
-            const file =
-              selected.file ??
-              (await (async () => {
-                const res = await fetch(selected.url)
-                const blob = await res.blob()
-                return new File([blob], "generated.png", {
-                  type: blob.type || "image/png",
-                })
-              })())
-            await pushFileAsset(file, "primary", "generated", "generated")
-            await pushFileAsset(file, "preview", "preview", "preview")
           } else if (
             activeTab === WorkspaceTab.INPAINT ||
             activeTab === WorkspaceTab.OUTPAINT ||
@@ -2147,24 +2285,25 @@ export const useStore = createWithEqualityFn<AppState & AppAction>()(
               await pushFileAsset(maskFile, "mask", "mask", "mask")
             }
           } else {
-            const featureState =
+            const featureTab: FeatureResultTab =
               activeTab === WorkspaceTab.REMOVE_BG
-                ? state.removeBgState
+                ? WorkspaceTab.REMOVE_BG
                 : activeTab === WorkspaceTab.SUPER_RES
+                ? WorkspaceTab.SUPER_RES
+                : WorkspaceTab.FACE_RESTORE
+            const featureState =
+              featureTab === WorkspaceTab.REMOVE_BG
+                ? state.removeBgState
+                : featureTab === WorkspaceTab.SUPER_RES
                 ? state.superResState
                 : state.faceRestoreState
-            const primary = featureState.resultImage ?? featureState.sourceImage
-            if (!primary) {
+            const hasFeatureAssets = await pushFeatureAssets(
+              featureState,
+              featureTab
+            )
+            if (!hasFeatureAssets) {
               throw new Error("当前没有可保存的图片")
             }
-            if (featureState.sourceImage) {
-              await pushFileAsset(featureState.sourceImage.file, "source", "uploaded", "source")
-            }
-            if (featureState.resultImage) {
-              await pushFileAsset(featureState.resultImage.file, "result", activeTab, "result")
-            }
-            await pushFileAsset(primary.file, "primary", activeTab, "primary")
-            await pushFileAsset(primary.file, "preview", "preview", "preview")
           }
 
           const detail = await saveWorkspaceApi({
