@@ -670,10 +670,10 @@ const defaultValues: AppState = {
     samplers: ["DPM++ 2M SDE Karras"],
     enableAuth: true,
   },
-  settings: createDefaultSettingsForTab(WorkspaceTab.INPAINT),
+  settings: createDefaultSettingsForTab(WorkspaceTab.GENERATE),
   settingsByFeature: createDefaultSettingsByFeature(),
 
-  activeTab: WorkspaceTab.INPAINT,
+  activeTab: WorkspaceTab.GENERATE,
   generatedImages: [],
   selectedGeneratedImageIndex: 0,
   pendingGeneratedHandoff: false,

@@ -50,13 +50,13 @@ const TAB_DEFS: TabDef[] = [
   },
   {
     id: WorkspaceTab.INPAINT,
-    label: "修复",
+    label: "AI擦除",
     icon: <Pencil className="h-5 w-5" />,
     visible: () => true,
   },
   {
     id: WorkspaceTab.OUTPAINT,
-    label: "外扩",
+    label: "AI扩图",
     icon: <Expand className="h-5 w-5" />,
     visible: (ctx) => ctx.hasAnyOutpaintingModel,
   },
@@ -128,10 +128,10 @@ const MainLayout = () => {
 
   const visibleTabs = TAB_DEFS.filter((t) => t.visible(visCtx))
 
-  // If current activeTab is no longer visible, fall back to INPAINT
+  // If current activeTab is no longer visible, fall back to the first visible tab.
   const effectiveTab = visibleTabs.find((t) => t.id === activeTab)
     ? activeTab
-    : WorkspaceTab.INPAINT
+    : (visibleTabs[0]?.id ?? WorkspaceTab.GENERATE)
 
   const renderContent = () => {
     switch (effectiveTab) {
