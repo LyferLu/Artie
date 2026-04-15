@@ -804,10 +804,10 @@ class "文生图模型\n(SDXLBase)" as SDXLBase {
   +txt2img(config)
 }
 
-Api ..> Txt2ImgRequest : 接收
-Api --> ModelManager : 调用
-ModelManager --> ModelInfo : 管理
-ModelManager --> SDXLBase : 加载
+Api "1" --> "0..*" Txt2ImgRequest : 接收
+Api "1" *--> "1" ModelManager : 持有
+ModelManager "1" *--> "0..*" ModelInfo : 管理
+ModelManager "1" *--> "1" SDXLBase : 当前模型
 SDXLBase --|> DiffusionInpaintModel
 @enduml
 ```
@@ -884,11 +884,11 @@ class "扩散修复模型\n(DiffusionInpaintModel)" as DiffusionInpaintModel {
   +__call__(image, mask, config)
 }
 
-Api ..> InpaintRequest : 接收
-Api --> ModelManager : 调用
-ModelManager --> InpaintModel : 加载
+Api "1" --> "0..*" InpaintRequest : 接收
+Api "1" *--> "1" ModelManager : 持有
+ModelManager "1" *--> "1" InpaintModel : 当前模型
 DiffusionInpaintModel --|> InpaintModel
-InpaintModel ..> InpaintRequest : 使用
+InpaintModel "1" --> "0..*" InpaintRequest : 处理
 @enduml
 ```
 
@@ -965,11 +965,11 @@ class "扩散修复模型\n(DiffusionInpaintModel)" as DiffusionInpaintModel {
   +_scaled_pad_forward(image, mask, config)
 }
 
-Api ..> InpaintRequest : 接收
-Api --> ModelManager : 调用
-ModelManager --> DiffusionInpaintModel : 加载
+Api "1" --> "0..*" InpaintRequest : 接收
+Api "1" *--> "1" ModelManager : 持有
+ModelManager "1" *--> "1" DiffusionInpaintModel : 当前模型
 DiffusionInpaintModel --|> InpaintModel
-DiffusionInpaintModel ..> InpaintRequest : 使用
+DiffusionInpaintModel "1" --> "0..*" InpaintRequest : 处理
 @enduml
 ```
 
@@ -1046,11 +1046,11 @@ class "扩散修复模型\n(DiffusionInpaintModel)" as DiffusionInpaintModel {
   +__call__(image, mask, config)
 }
 
-Api ..> InpaintRequest : 接收
-Api --> ModelManager : 调用
-ModelManager --> DiffusionInpaintModel : 加载
+Api "1" --> "0..*" InpaintRequest : 接收
+Api "1" *--> "1" ModelManager : 持有
+ModelManager "1" *--> "1" DiffusionInpaintModel : 当前模型
 DiffusionInpaintModel --|> InpaintModel
-DiffusionInpaintModel ..> InpaintRequest : 使用
+DiffusionInpaintModel "1" --> "0..*" InpaintRequest : 处理
 @enduml
 ```
 
@@ -1131,10 +1131,10 @@ class "去背景模型枚举\n(RemoveBGModel)" as RemoveBGModel {
   +birefnet_general
 }
 
-Api ..> RunPluginRequest : 接收
-Api --> RemoveBG : 调用
+Api "1" --> "0..*" RunPluginRequest : 接收
+Api "1" *--> "0..1" RemoveBG : 持有
 RemoveBG --|> BasePlugin
-RemoveBG ..> RemoveBGModel : 使用
+RemoveBG "0..*" --> "1" RemoveBGModel : 当前模型
 @enduml
 ```
 
@@ -1209,10 +1209,10 @@ class "超分模型枚举\n(RealESRGANModel)" as RealESRGANModel {
   +RealESRGAN_x4plus_anime_6B
 }
 
-Api ..> RunPluginRequest : 接收
-Api --> RealESRGANUpscaler : 调用
+Api "1" --> "0..*" RunPluginRequest : 接收
+Api "1" *--> "0..1" RealESRGANUpscaler : 持有
 RealESRGANUpscaler --|> BasePlugin
-RealESRGANUpscaler ..> RealESRGANModel : 使用
+RealESRGANUpscaler "0..*" --> "1" RealESRGANModel : 当前模型
 @enduml
 ```
 
@@ -1288,14 +1288,15 @@ class "超分插件\n(RealESRGANUpscaler)" as RealESRGANUpscaler {
   +gen_image(rgb_np_img, req)
 }
 
-Api ..> RunPluginRequest : 接收
-Api --> GFPGANPlugin : 调用
-Api --> RestoreFormerPlugin : 调用
+Api "1" --> "0..*" RunPluginRequest : 接收
+Api "1" *--> "0..1" GFPGANPlugin : 持有
+Api "1" *--> "0..1" RestoreFormerPlugin : 持有
+Api "1" *--> "0..1" RealESRGANUpscaler : 持有
 GFPGANPlugin --|> BasePlugin
 RestoreFormerPlugin --|> BasePlugin
 RealESRGANUpscaler --|> BasePlugin
-GFPGANPlugin --> RealESRGANUpscaler : 可选背景放大
-RestoreFormerPlugin --> RealESRGANUpscaler : 可选背景放大
+GFPGANPlugin "0..*" --> "0..1" RealESRGANUpscaler : 背景放大器
+RestoreFormerPlugin "0..*" --> "0..1" RealESRGANUpscaler : 背景放大器
 @enduml
 ```
 
@@ -1376,10 +1377,10 @@ class "交互分割模型枚举\n(InteractiveSegModel)" as InteractiveSegModel {
   +sam2_1_large
 }
 
-Api ..> RunPluginRequest : 接收
-Api --> InteractiveSeg : 调用
+Api "1" --> "0..*" RunPluginRequest : 接收
+Api "1" *--> "0..1" InteractiveSeg : 持有
 InteractiveSeg --|> BasePlugin
-InteractiveSeg ..> InteractiveSegModel : 使用
+InteractiveSeg "0..*" --> "1" InteractiveSegModel : 当前模型
 @enduml
 ```
 
@@ -1578,17 +1579,17 @@ class "活动事件\n(ActivityEvent)" as ActivityEvent {
   +feature: str
 }
 
-User "1" --> "0..*" WorkspaceSession : 拥有
-User "1" --> "0..*" Asset : 上传
-User "1" --> "0..*" OperationRun : 产生
-User "1" --> "0..*" ActivityEvent : 触发
-WorkspaceSession "1" --> "0..*" SessionSnapshot : 包含
-WorkspaceSession "1" --> "0..*" SessionFeatureState : 保存
-WorkspaceSession "1" --> "0..*" Asset : 管理
-WorkspaceSession "1" --> "0..*" OperationRun : 记录
-WorkspaceSession "1" --> "0..*" ActivityEvent : 记录
-Asset "1" --> "0..*" AssetFile : 对应
-OperationRun "1" --> "0..*" OperationRunAsset : 关联
+User "1" *--> "0..*" WorkspaceSession : 拥有
+User "1" *--> "0..*" Asset : 拥有
+User "1" *--> "0..*" OperationRun : 产生
+User "1" *--> "0..*" ActivityEvent : 触发
+WorkspaceSession "1" *--> "0..*" SessionSnapshot : 包含
+WorkspaceSession "1" *--> "0..*" SessionFeatureState : 保存
+WorkspaceSession "0..1" --> "0..*" Asset : 关联
+WorkspaceSession "0..1" --> "0..*" OperationRun : 记录
+WorkspaceSession "0..1" --> "0..*" ActivityEvent : 记录
+Asset "1" *--> "0..*" AssetFile : 包含
+OperationRun "1" *--> "0..*" OperationRunAsset : 包含
 Asset "1" --> "0..*" OperationRunAsset : 被引用
 @enduml
 ```
@@ -1666,11 +1667,11 @@ class "活动事件\n(ActivityEvent)" as ActivityEvent {
   +created_at: datetime
 }
 
-Api ..> UserLogin : 接收
-Api --> User : 校验
-Api ..> TokenResponse : 返回
-Api --> ActivityEvent : 记录
-User "1" --> "0..*" ActivityEvent : 触发
+Api "1" --> "0..*" UserLogin : 接收
+Api "1" --> "0..*" User : 校验
+Api "1" --> "0..*" TokenResponse : 返回
+Api "1" --> "0..*" ActivityEvent : 记录
+User "1" *--> "0..*" ActivityEvent : 触发
 @enduml
 ```
 
