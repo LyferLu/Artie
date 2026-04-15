@@ -756,11 +756,69 @@ end
 
 图 4.2 文生图生成序列图
 
+文生图创作模块涉及系统接口控制器（Api）类、图像生成任务（Txt2ImgRequest）类、模型管理器（ModelManager）类、模型信息（ModelInfo）类、扩散修复模型（DiffusionInpaintModel）类和文生图模型（SDXLBase）类，其相关类设计如图 4.3 所示。
+
+```plantuml
+@startuml
+skinparam classAttributeIconSize 0
+
+class "系统接口控制器\n(Api)" as Api {
+  +model_manager
+  +api_txt2img(req)
+}
+
+class "图像生成任务\n(Txt2ImgRequest)" as Txt2ImgRequest {
+  +session_id: str
+  +prompt: str
+  +negative_prompt: str
+  +model_name: str
+  +width: int
+  +height: int
+  +sd_steps: int
+  +sd_guidance_scale: float
+  +sd_sampler: str
+  +sd_seed: int
+}
+
+class "模型管理器\n(ModelManager)" as ModelManager {
+  +name: str
+  +available_models
+  +model
+  +current_model
+  +init_model(name, device)
+}
+
+class "模型信息\n(ModelInfo)" as ModelInfo {
+  +name: str
+  +path: str
+  +model_type: ModelType
+  +support_txt2img: bool
+}
+
+class "扩散修复模型\n(DiffusionInpaintModel)" as DiffusionInpaintModel {
+  +txt2img(config)
+  +__call__(image, mask, config)
+}
+
+class "文生图模型\n(SDXLBase)" as SDXLBase {
+  +txt2img(config)
+}
+
+Api ..> Txt2ImgRequest : 接收
+Api --> ModelManager : 调用
+ModelManager --> ModelInfo : 管理
+ModelManager --> SDXLBase : 加载
+SDXLBase --|> DiffusionInpaintModel
+@enduml
+```
+
+图 4.3 文生图创作模块相关类图
+
 ### 4.3.2 AI擦除模块设计
 
 AI擦除模块涉及的功能包括加载当前工作图像、绘制蒙版、提交擦除请求和更新处理结果。由于该模块的核心业务集中在擦除处理环节，本部分在 AI擦除模块设计中选择 AI擦除功能进行详细描述。
 
-1. AI擦除：AI擦除用于移除图像中不需要的局部内容并完成智能补全。首先，用户访问 AI擦除界面，系统在 AI擦除界面中加载当前工作图像。然后，用户在画布中绘制待处理区域的蒙版，并点击执行按钮提交 AI擦除请求。系统校验当前图像、蒙版和相关参数后，调用编辑类接口执行局部修复推理。处理成功后，系统仍停留在当前 AI擦除界面，并直接更新当前画布、图像结果和渲染历史；处理失败时，前端在当前界面显示错误提示消息。AI擦除序列图如图 4.3 所示。
+1. AI擦除：AI擦除用于移除图像中不需要的局部内容并完成智能补全。首先，用户访问 AI擦除界面，系统在 AI擦除界面中加载当前工作图像。然后，用户在画布中绘制待处理区域的蒙版，并点击执行按钮提交 AI擦除请求。系统校验当前图像、蒙版和相关参数后，调用编辑类接口执行局部修复推理。处理成功后，系统仍停留在当前 AI擦除界面，并直接更新当前画布、图像结果和渲染历史；处理失败时，前端在当前界面显示错误提示消息。AI擦除序列图如图 4.4 所示。
 
 ```plantuml
 @startuml
@@ -786,13 +844,61 @@ end
 @enduml
 ```
 
-图 4.3 AI擦除序列图
+图 4.4 AI擦除序列图
+
+AI擦除模块涉及系统接口控制器（Api）类、图像编辑任务（InpaintRequest）类、模型管理器（ModelManager）类、图像修复模型（InpaintModel）类和扩散修复模型（DiffusionInpaintModel）类，其相关类设计如图 4.5 所示。
+
+```plantuml
+@startuml
+skinparam classAttributeIconSize 0
+
+class "系统接口控制器\n(Api)" as Api {
+  +model_manager
+  +api_inpaint(req)
+}
+
+class "图像编辑任务\n(InpaintRequest)" as InpaintRequest {
+  +session_id: str
+  +image: str
+  +mask: str
+  +task_type: inpaint
+  +hd_strategy: str
+  +prompt: str
+  +sd_steps: int
+  +sd_guidance_scale: float
+}
+
+class "模型管理器\n(ModelManager)" as ModelManager {
+  +name: str
+  +current_model
+  +init_model(name, device)
+}
+
+class "图像修复模型\n(InpaintModel)" as InpaintModel {
+  +forward(image, mask, config)
+  +__call__(image, mask, config)
+}
+
+class "扩散修复模型\n(DiffusionInpaintModel)" as DiffusionInpaintModel {
+  +_scaled_pad_forward(image, mask, config)
+  +__call__(image, mask, config)
+}
+
+Api ..> InpaintRequest : 接收
+Api --> ModelManager : 调用
+ModelManager --> InpaintModel : 加载
+DiffusionInpaintModel --|> InpaintModel
+InpaintModel ..> InpaintRequest : 使用
+@enduml
+```
+
+图 4.5 AI擦除模块相关类图
 
 ### 4.3.3 AI扩图模块设计
 
 AI扩图模块涉及的功能包括加载原始图像、设置扩展方向与范围、提交扩图请求以及更新扩图结果。由于该模块的核心业务集中在扩图处理环节，本部分在 AI扩图模块设计中选择 AI扩图功能进行详细描述。
 
-1. AI扩图：AI扩图用于在保持原始图像主体内容相对稳定的前提下，对图像边界进行扩展和补全。首先，用户访问 AI扩图界面，系统在 AI扩图界面中加载当前工作图像。然后，用户在界面中设置扩展方向、扩展范围和相关提示词信息，并点击执行按钮提交 AI扩图请求。系统校验扩展区域、图像状态和扩图所需模型可用性后，执行扩图推理。处理成功后，系统仍停留在当前 AI扩图界面，并直接更新当前画布、图像尺寸和渲染历史；处理失败时，前端在当前界面显示错误提示消息。AI扩图序列图如图 4.4 所示。
+1. AI扩图：AI扩图用于在保持原始图像主体内容相对稳定的前提下，对图像边界进行扩展和补全。首先，用户访问 AI扩图界面，系统在 AI扩图界面中加载当前工作图像。然后，用户在界面中设置扩展方向、扩展范围和相关提示词信息，并点击执行按钮提交 AI扩图请求。系统校验扩展区域、图像状态和扩图所需模型可用性后，执行扩图推理。处理成功后，系统仍停留在当前 AI扩图界面，并直接更新当前画布、图像尺寸和渲染历史；处理失败时，前端在当前界面显示错误提示消息。AI扩图序列图如图 4.6 所示。
 
 ```plantuml
 @startuml
@@ -818,13 +924,62 @@ end
 @enduml
 ```
 
-图 4.4 AI扩图序列图
+图 4.6 AI扩图序列图
+
+AI扩图模块涉及系统接口控制器（Api）类、扩图任务（InpaintRequest）类、模型管理器（ModelManager）类、图像修复模型（InpaintModel）类和扩散修复模型（DiffusionInpaintModel）类，其相关类设计如图 4.7 所示。
+
+```plantuml
+@startuml
+skinparam classAttributeIconSize 0
+
+class "系统接口控制器\n(Api)" as Api {
+  +model_manager
+  +api_inpaint(req)
+}
+
+class "扩图任务\n(InpaintRequest)" as InpaintRequest {
+  +session_id: str
+  +image: str
+  +task_type: outpaint
+  +use_extender: bool
+  +extender_x: int
+  +extender_y: int
+  +extender_width: int
+  +extender_height: int
+  +prompt: str
+}
+
+class "模型管理器\n(ModelManager)" as ModelManager {
+  +name: str
+  +current_model
+  +init_model(name, device)
+}
+
+class "图像修复模型\n(InpaintModel)" as InpaintModel {
+  +forward(image, mask, config)
+  +__call__(image, mask, config)
+}
+
+class "扩散修复模型\n(DiffusionInpaintModel)" as DiffusionInpaintModel {
+  +_do_outpainting(image, config)
+  +_scaled_pad_forward(image, mask, config)
+}
+
+Api ..> InpaintRequest : 接收
+Api --> ModelManager : 调用
+ModelManager --> DiffusionInpaintModel : 加载
+DiffusionInpaintModel --|> InpaintModel
+DiffusionInpaintModel ..> InpaintRequest : 使用
+@enduml
+```
+
+图 4.7 AI扩图模块相关类图
 
 ### 4.3.4 AI重绘模块设计
 
 AI重绘模块涉及的功能包括局部区域选定、提示词录入、重绘请求提交和结果替换。由于该模块的核心业务集中在局部重绘处理环节，本部分在 AI重绘模块设计中选择 AI重绘功能进行详细描述。
 
-1. AI重绘：AI重绘用于在局部选区范围内按照新的语义提示重新生成内容。首先，用户访问 AI重绘界面，系统在 AI重绘界面中加载当前工作图像。然后，用户绘制局部蒙版区域，并输入新的重绘提示词和其他参数信息，点击执行按钮提交 AI重绘请求。系统校验当前图像、蒙版和重绘所需模型可用性后，执行局部重绘推理。处理成功后，系统仍停留在当前 AI重绘界面，并直接更新当前画布和渲染历史；处理失败时，前端在当前界面显示错误提示消息。AI重绘序列图如图 4.5 所示。
+1. AI重绘：AI重绘用于在局部选区范围内按照新的语义提示重新生成内容。首先，用户访问 AI重绘界面，系统在 AI重绘界面中加载当前工作图像。然后，用户绘制局部蒙版区域，并输入新的重绘提示词和其他参数信息，点击执行按钮提交 AI重绘请求。系统校验当前图像、蒙版和重绘所需模型可用性后，执行局部重绘推理。处理成功后，系统仍停留在当前 AI重绘界面，并直接更新当前画布和渲染历史；处理失败时，前端在当前界面显示错误提示消息。AI重绘序列图如图 4.8 所示。
 
 ```plantuml
 @startuml
@@ -850,13 +1005,62 @@ end
 @enduml
 ```
 
-图 4.5 AI重绘序列图
+图 4.8 AI重绘序列图
+
+AI重绘模块涉及系统接口控制器（Api）类、重绘任务（InpaintRequest）类、模型管理器（ModelManager）类、图像修复模型（InpaintModel）类和扩散修复模型（DiffusionInpaintModel）类，其相关类设计如图 4.9 所示。
+
+```plantuml
+@startuml
+skinparam classAttributeIconSize 0
+
+class "系统接口控制器\n(Api)" as Api {
+  +model_manager
+  +api_inpaint(req)
+}
+
+class "重绘任务\n(InpaintRequest)" as InpaintRequest {
+  +session_id: str
+  +image: str
+  +mask: str
+  +task_type: repaint
+  +prompt: str
+  +negative_prompt: str
+  +sd_steps: int
+  +sd_guidance_scale: float
+  +sd_seed: int
+}
+
+class "模型管理器\n(ModelManager)" as ModelManager {
+  +name: str
+  +current_model
+  +init_model(name, device)
+}
+
+class "图像修复模型\n(InpaintModel)" as InpaintModel {
+  +forward(image, mask, config)
+  +__call__(image, mask, config)
+}
+
+class "扩散修复模型\n(DiffusionInpaintModel)" as DiffusionInpaintModel {
+  +_scaled_pad_forward(image, mask, config)
+  +__call__(image, mask, config)
+}
+
+Api ..> InpaintRequest : 接收
+Api --> ModelManager : 调用
+ModelManager --> DiffusionInpaintModel : 加载
+DiffusionInpaintModel --|> InpaintModel
+DiffusionInpaintModel ..> InpaintRequest : 使用
+@enduml
+```
+
+图 4.9 AI重绘模块相关类图
 
 ### 4.3.5 去背景模块设计
 
 去背景模块涉及的功能包括当前图像加载、去背景模型选择、插件处理和结果展示。由于该模块的核心业务集中在去背景处理环节，本部分在去背景模块设计中选择去背景功能进行详细描述。
 
-1. 去背景：去背景用于提取图像主体并输出透明背景结果。首先，用户访问去背景界面，系统在当前界面加载工作图像；若当前没有可用图像，则允许用户上传图片作为输入。然后，用户选择去背景模型并点击执行按钮提交去背景请求。系统校验插件和模型信息后，调用 RemoveBG 插件执行主体分离。处理成功后，结果仍显示在当前去背景界面的结果区域中，并同步写入结果历史；处理失败时，前端在当前界面显示错误提示消息。去背景序列图如图 4.6 所示。
+1. 去背景：去背景用于提取图像主体并输出透明背景结果。首先，用户访问去背景界面，系统在当前界面加载工作图像；若当前没有可用图像，则允许用户上传图片作为输入。然后，用户选择去背景模型并点击执行按钮提交去背景请求。系统校验插件和模型信息后，调用 RemoveBG 插件执行主体分离。处理成功后，结果仍显示在当前去背景界面的结果区域中，并同步写入结果历史；处理失败时，前端在当前界面显示错误提示消息。去背景序列图如图 4.10 所示。
 
 ```plantuml
 @startuml
@@ -882,13 +1086,65 @@ end
 @enduml
 ```
 
-图 4.6 去背景序列图
+图 4.10 去背景序列图
+
+去背景模块涉及系统接口控制器（Api）类、插件处理任务（RunPluginRequest）类、插件基类（BasePlugin）类、去背景插件（RemoveBG）类和去背景模型枚举（RemoveBGModel）类，其相关类设计如图 4.11 所示。
+
+```plantuml
+@startuml
+skinparam classAttributeIconSize 0
+
+class "系统接口控制器\n(Api)" as Api {
+  +plugins
+  +api_run_plugin_gen_image(req)
+  +api_run_plugin_gen_mask(req)
+}
+
+class "插件处理任务\n(RunPluginRequest)" as RunPluginRequest {
+  +session_id: str
+  +name: str
+  +image: str
+  +clicks: List
+  +scale: float
+}
+
+class "插件基类\n(BasePlugin)" as BasePlugin {
+  +name: str
+  +support_gen_image: bool
+  +support_gen_mask: bool
+  +gen_image(rgb_np_img, req)
+  +gen_mask(rgb_np_img, req)
+}
+
+class "去背景插件\n(RemoveBG)" as RemoveBG {
+  +model_name: str
+  +device: Device
+  +_init_session(model_name)
+  +gen_image(rgb_np_img, req)
+  +gen_mask(rgb_np_img, req)
+}
+
+class "去背景模型枚举\n(RemoveBGModel)" as RemoveBGModel {
+  +briaai_rmbg_1_4
+  +briaai_rmbg_2_0
+  +u2net
+  +birefnet_general
+}
+
+Api ..> RunPluginRequest : 接收
+Api --> RemoveBG : 调用
+RemoveBG --|> BasePlugin
+RemoveBG ..> RemoveBGModel : 使用
+@enduml
+```
+
+图 4.11 去背景模块相关类图
 
 ### 4.3.6 超分辨率模块设计
 
 超分辨率模块涉及的功能包括图像加载、超分模型选择、增强请求提交和增强结果展示。由于该模块的核心业务集中在超分辨率处理环节，本部分在超分辨率模块设计中选择超分辨率功能进行详细描述。
 
-1. 超分辨率：超分辨率用于提升图像清晰度并放大输出尺寸。首先，用户访问超分辨率界面，系统在当前界面加载工作图像；若当前没有可用图像，则允许用户上传图片作为输入。然后，用户选择超分模型并点击执行按钮提交超分请求。系统校验插件和模型信息后，以预设放大倍率调用 Real-ESRGAN 插件执行图像增强。处理成功后，结果仍显示在当前超分辨率界面的结果区域中，并同步写入结果历史；处理失败时，前端在当前界面显示错误提示消息。超分辨率序列图如图 4.7 所示。
+1. 超分辨率：超分辨率用于提升图像清晰度并放大输出尺寸。首先，用户访问超分辨率界面，系统在当前界面加载工作图像；若当前没有可用图像，则允许用户上传图片作为输入。然后，用户选择超分模型并点击执行按钮提交超分请求。系统校验插件和模型信息后，以预设放大倍率调用 Real-ESRGAN 插件执行图像增强。处理成功后，结果仍显示在当前超分辨率界面的结果区域中，并同步写入结果历史；处理失败时，前端在当前界面显示错误提示消息。超分辨率序列图如图 4.12 所示。
 
 ```plantuml
 @startuml
@@ -914,13 +1170,59 @@ end
 @enduml
 ```
 
-图 4.7 超分辨率序列图
+图 4.12 超分辨率序列图
+
+超分辨率模块涉及系统接口控制器（Api）类、插件处理任务（RunPluginRequest）类、插件基类（BasePlugin）类、超分插件（RealESRGANUpscaler）类和超分模型枚举（RealESRGANModel）类，其相关类设计如图 4.13 所示。
+
+```plantuml
+@startuml
+skinparam classAttributeIconSize 0
+
+class "系统接口控制器\n(Api)" as Api {
+  +plugins
+  +api_run_plugin_gen_image(req)
+}
+
+class "插件处理任务\n(RunPluginRequest)" as RunPluginRequest {
+  +session_id: str
+  +name: str
+  +image: str
+  +scale: float
+}
+
+class "插件基类\n(BasePlugin)" as BasePlugin {
+  +name: str
+  +support_gen_image: bool
+  +gen_image(rgb_np_img, req)
+}
+
+class "超分插件\n(RealESRGANUpscaler)" as RealESRGANUpscaler {
+  +model_name: str
+  +device: Device
+  +_init_model(name)
+  +gen_image(rgb_np_img, req)
+}
+
+class "超分模型枚举\n(RealESRGANModel)" as RealESRGANModel {
+  +realesr_general_x4v3
+  +RealESRGAN_x4plus
+  +RealESRGAN_x4plus_anime_6B
+}
+
+Api ..> RunPluginRequest : 接收
+Api --> RealESRGANUpscaler : 调用
+RealESRGANUpscaler --|> BasePlugin
+RealESRGANUpscaler ..> RealESRGANModel : 使用
+@enduml
+```
+
+图 4.13 超分辨率模块相关类图
 
 ### 4.3.7 修复人脸模块设计
 
 修复人脸模块涉及的功能包括当前图像加载、修复插件选择、修复请求提交和结果回写。由于该模块的核心业务集中在修复人脸处理环节，本部分在修复人脸模块设计中选择修复人脸功能进行详细描述。
 
-1. 修复人脸：修复人脸用于改善图像中人物面部细节失真问题。首先，用户访问修复人脸界面，系统在当前界面加载工作图像；若当前没有可用图像，则允许用户上传图片作为输入。然后，用户点击 GFPGAN 或 RestoreFormer 对应按钮提交人脸修复请求。系统校验可用插件信息后，调用对应的人脸修复插件执行增强处理。处理成功后，结果仍显示在当前修复人脸界面的结果区域中，并同步写入结果历史；处理失败时，前端在当前界面显示错误提示消息。修复人脸序列图如图 4.8 所示。
+1. 修复人脸：修复人脸用于改善图像中人物面部细节失真问题。首先，用户访问修复人脸界面，系统在当前界面加载工作图像；若当前没有可用图像，则允许用户上传图片作为输入。然后，用户点击 GFPGAN 或 RestoreFormer 对应按钮提交人脸修复请求。系统校验可用插件信息后，调用对应的人脸修复插件执行增强处理。处理成功后，结果仍显示在当前修复人脸界面的结果区域中，并同步写入结果历史；处理失败时，前端在当前界面显示错误提示消息。修复人脸序列图如图 4.14 所示。
 
 ```plantuml
 @startuml
@@ -946,13 +1248,64 @@ end
 @enduml
 ```
 
-图 4.8 修复人脸序列图
+图 4.14 修复人脸序列图
+
+修复人脸模块涉及系统接口控制器（Api）类、插件处理任务（RunPluginRequest）类、插件基类（BasePlugin）类、GFPGAN 插件（GFPGANPlugin）类、RestoreFormer 插件（RestoreFormerPlugin）类和超分插件（RealESRGANUpscaler）类，其相关类设计如图 4.15 所示。
+
+```plantuml
+@startuml
+skinparam classAttributeIconSize 0
+
+class "系统接口控制器\n(Api)" as Api {
+  +plugins
+  +api_run_plugin_gen_image(req)
+}
+
+class "插件处理任务\n(RunPluginRequest)" as RunPluginRequest {
+  +session_id: str
+  +name: str
+  +image: str
+}
+
+class "插件基类\n(BasePlugin)" as BasePlugin {
+  +name: str
+  +support_gen_image: bool
+  +gen_image(rgb_np_img, req)
+}
+
+class "GFPGAN 插件\n(GFPGANPlugin)" as GFPGANPlugin {
+  +face_enhancer
+  +gen_image(rgb_np_img, req)
+}
+
+class "RestoreFormer 插件\n(RestoreFormerPlugin)" as RestoreFormerPlugin {
+  +face_enhancer
+  +gen_image(rgb_np_img, req)
+}
+
+class "超分插件\n(RealESRGANUpscaler)" as RealESRGANUpscaler {
+  +model_name: str
+  +gen_image(rgb_np_img, req)
+}
+
+Api ..> RunPluginRequest : 接收
+Api --> GFPGANPlugin : 调用
+Api --> RestoreFormerPlugin : 调用
+GFPGANPlugin --|> BasePlugin
+RestoreFormerPlugin --|> BasePlugin
+RealESRGANUpscaler --|> BasePlugin
+GFPGANPlugin --> RealESRGANUpscaler : 可选背景放大
+RestoreFormerPlugin --> RealESRGANUpscaler : 可选背景放大
+@enduml
+```
+
+图 4.15 修复人脸模块相关类图
 
 ### 4.3.8 智能选区模块设计
 
 智能选区模块涉及的功能包括当前图像加载、前景点与背景点标注、分割请求提交和选区确认。由于该模块的核心业务集中在选区生成环节，本部分在智能选区模块设计中选择智能选区功能进行详细描述。
 
-1. 智能选区：智能选区用于通过点击交互方式快速生成候选蒙版区域。首先，用户访问智能选区界面，系统在智能选区界面中加载当前工作图像并开启点击交互。然后，用户在图像中点击前景点和背景点，前端将点击点信息发送给交互式分割插件。系统返回候选蒙版后，前端先在当前界面更新候选选区预览；用户确认结果可用后，再点击接受按钮将候选蒙版写入当前编辑状态。若插件执行失败，则前端在当前界面显示错误提示消息。智能选区序列图如图 4.9 所示。
+1. 智能选区：智能选区用于通过点击交互方式快速生成候选蒙版区域。首先，用户访问智能选区界面，系统在智能选区界面中加载当前工作图像并开启点击交互。然后，用户在图像中点击前景点和背景点，前端将点击点信息发送给交互式分割插件。系统返回候选蒙版后，前端先在当前界面更新候选选区预览；用户确认结果可用后，再点击接受按钮将候选蒙版写入当前编辑状态。若插件执行失败，则前端在当前界面显示错误提示消息。智能选区序列图如图 4.16 所示。
 
 ```plantuml
 @startuml
@@ -982,13 +1335,61 @@ end
 @enduml
 ```
 
-图 4.9 智能选区序列图
+图 4.16 智能选区序列图
+
+智能选区模块涉及系统接口控制器（Api）类、插件处理任务（RunPluginRequest）类、插件基类（BasePlugin）类、交互分割插件（InteractiveSeg）类和交互分割模型枚举（InteractiveSegModel）类，其相关类设计如图 4.17 所示。
+
+```plantuml
+@startuml
+skinparam classAttributeIconSize 0
+
+class "系统接口控制器\n(Api)" as Api {
+  +plugins
+  +api_run_plugin_gen_mask(req)
+}
+
+class "插件处理任务\n(RunPluginRequest)" as RunPluginRequest {
+  +session_id: str
+  +name: str
+  +image: str
+  +clicks: List
+}
+
+class "插件基类\n(BasePlugin)" as BasePlugin {
+  +name: str
+  +support_gen_mask: bool
+  +gen_mask(rgb_np_img, req)
+}
+
+class "交互分割插件\n(InteractiveSeg)" as InteractiveSeg {
+  +model_name: str
+  +device: Device
+  +predictor
+  +_init_session(model_name)
+  +gen_mask(rgb_np_img, req)
+}
+
+class "交互分割模型枚举\n(InteractiveSegModel)" as InteractiveSegModel {
+  +vit_b
+  +mobile_sam
+  +sam2_1_tiny
+  +sam2_1_large
+}
+
+Api ..> RunPluginRequest : 接收
+Api --> InteractiveSeg : 调用
+InteractiveSeg --|> BasePlugin
+InteractiveSeg ..> InteractiveSegModel : 使用
+@enduml
+```
+
+图 4.17 智能选区模块相关类图
 
 ### 4.3.9 用户工作区模块设计
 
 用户工作区模块涉及的功能包括查看工作区列表、保存工作区、恢复工作区和删除工作区。由于用户工作区模块涉及到的功能较多，此部分在用户工作区模块设计中选择查看工作区列表、保存工作区、恢复工作区和删除工作区功能进行详细描述。
 
-1. 查看工作区列表：查看工作区列表是用户管理个人创作记录的基础功能。首先，用户访问“我的作品”界面。然后，前端会自动向后端发起工作区列表加载请求。系统校验当前用户身份后，查询该用户对应的工作区记录并返回列表结果。加载成功后，系统在当前“我的作品”界面更新工作区列表；若列表加载失败，当前界面不会跳转到新的失败页面，而是结束加载并保持原有页面状态。查看工作区列表序列图如图 4.10 所示。
+1. 查看工作区列表：查看工作区列表是用户管理个人创作记录的基础功能。首先，用户访问“我的作品”界面。然后，前端会自动向后端发起工作区列表加载请求。系统校验当前用户身份后，查询该用户对应的工作区记录并返回列表结果。加载成功后，系统在当前“我的作品”界面更新工作区列表；若列表加载失败，当前界面不会跳转到新的失败页面，而是结束加载并保持原有页面状态。查看工作区列表序列图如图 4.18 所示。
 
 ```plantuml
 @startuml
@@ -1012,9 +1413,9 @@ end
 @enduml
 ```
 
-图 4.10 工作区列表查询序列图
+图 4.18 工作区列表查询序列图
 
-2. 保存工作区：保存工作区用于持久化保存用户当前的图片、参数和处理状态。首先，用户在任意功能页完成生成或编辑后点击顶栏保存按钮。然后，前端整理当前标签页、主图、蒙版、预览图和各功能参数状态，并向后端提交工作区保存信息。系统创建或更新工作区会话、快照和资源文件后返回最新会话信息。保存成功后，系统仍停留在当前功能界面，仅更新当前会话编号和未保存标记，并通过提示消息反馈保存完成；同时，前端会刷新“我的作品”列表数据。保存失败时，前端在当前界面显示错误提示消息。保存工作区序列图如图 4.11 所示。
+2. 保存工作区：保存工作区用于持久化保存用户当前的图片、参数和处理状态。首先，用户在任意功能页完成生成或编辑后点击顶栏保存按钮。然后，前端整理当前标签页、主图、蒙版、预览图和各功能参数状态，并向后端提交工作区保存信息。系统创建或更新工作区会话、快照和资源文件后返回最新会话信息。保存成功后，系统仍停留在当前功能界面，仅更新当前会话编号和未保存标记，并通过提示消息反馈保存完成；同时，前端会刷新“我的作品”列表数据。保存失败时，前端在当前界面显示错误提示消息。保存工作区序列图如图 4.19 所示。
 
 ```plantuml
 @startuml
@@ -1042,9 +1443,9 @@ end
 @enduml
 ```
 
-图 4.11 工作区保存序列图
+图 4.19 工作区保存序列图
 
-3. 恢复工作区：恢复工作区用于把历史创作记录重新加载到当前编辑现场。首先，用户访问“我的作品”界面并选择需要恢复的工作区记录。然后，点击继续编辑按钮提交工作区恢复请求。系统读取对应工作区的快照、资源和功能状态信息后，将结果返回给前端。恢复成功后，前端会重建本地状态并切换到对应的目标功能页继续创作；恢复失败时，前端在当前界面显示错误提示消息。恢复工作区序列图如图 4.12 所示。
+3. 恢复工作区：恢复工作区用于把历史创作记录重新加载到当前编辑现场。首先，用户访问“我的作品”界面并选择需要恢复的工作区记录。然后，点击继续编辑按钮提交工作区恢复请求。系统读取对应工作区的快照、资源和功能状态信息后，将结果返回给前端。恢复成功后，前端会重建本地状态并切换到对应的目标功能页继续创作；恢复失败时，前端在当前界面显示错误提示消息。恢复工作区序列图如图 4.20 所示。
 
 ```plantuml
 @startuml
@@ -1068,9 +1469,9 @@ end
 @enduml
 ```
 
-图 4.12 工作区恢复序列图
+图 4.20 工作区恢复序列图
 
-4. 删除工作区：删除工作区用于清理用户不再需要的工作区记录。首先，用户访问“我的作品”界面并选择需要删除的工作区记录。然后，点击删除按钮提交工作区删除请求。系统校验工作区记录信息后，对对应工作区执行软删除处理。删除成功后，系统不会跳转到新的成功页面，而是在当前“我的作品”界面同步更新列表和详情状态；删除失败时，前端在当前界面显示错误提示消息。删除工作区序列图如图 4.13 所示。
+4. 删除工作区：删除工作区用于清理用户不再需要的工作区记录。首先，用户访问“我的作品”界面并选择需要删除的工作区记录。然后，点击删除按钮提交工作区删除请求。系统校验工作区记录信息后，对对应工作区执行软删除处理。删除成功后，系统不会跳转到新的成功页面，而是在当前“我的作品”界面同步更新列表和详情状态；删除失败时，前端在当前界面显示错误提示消息。删除工作区序列图如图 4.21 所示。
 
 ```plantuml
 @startuml
@@ -1094,13 +1495,111 @@ end
 @enduml
 ```
 
-图 4.13 工作区删除序列图
+图 4.21 工作区删除序列图
+
+用户工作区模块涉及用户（User）类、工作区会话（WorkspaceSession）类、会话快照（SessionSnapshot）类、功能状态（SessionFeatureState）类、资源（Asset）类、资源文件（AssetFile）类、操作记录（OperationRun）类、操作资源关联（OperationRunAsset）类和活动事件（ActivityEvent）类，其相关类设计如图 4.22 所示。
+
+```plantuml
+@startuml
+skinparam classAttributeIconSize 0
+
+class "用户\n(User)" as User {
+  +id: str
+  +username: str
+  +email: str
+  +created_at: datetime
+  +last_login: datetime
+}
+
+class "工作区会话\n(WorkspaceSession)" as WorkspaceSession {
+  +id: str
+  +user_id: str
+  +title: str
+  +status: str
+  +source_feature: str
+  +current_feature: str
+  +updated_at: datetime
+}
+
+class "会话快照\n(SessionSnapshot)" as SessionSnapshot {
+  +id: str
+  +session_id: str
+  +active_tab: str
+  +primary_asset_id: str
+  +mask_asset_id: str
+  +preview_asset_id: str
+}
+
+class "功能状态\n(SessionFeatureState)" as SessionFeatureState {
+  +id: str
+  +session_id: str
+  +feature_key: str
+  +state_json: str
+}
+
+class "资源\n(Asset)" as Asset {
+  +id: str
+  +user_id: str
+  +session_id: str
+  +kind: str
+  +origin_feature: str
+  +mime_type: str
+}
+
+class "资源文件\n(AssetFile)" as AssetFile {
+  +id: str
+  +asset_id: str
+  +role: str
+  +filename: str
+  +storage_path: str
+}
+
+class "操作记录\n(OperationRun)" as OperationRun {
+  +id: str
+  +session_id: str
+  +feature: str
+  +operation: str
+  +status: str
+  +duration_ms: int
+}
+
+class "操作资源关联\n(OperationRunAsset)" as OperationRunAsset {
+  +id: str
+  +operation_run_id: str
+  +asset_id: str
+  +role: str
+}
+
+class "活动事件\n(ActivityEvent)" as ActivityEvent {
+  +id: str
+  +user_id: str
+  +session_id: str
+  +event_type: str
+  +feature: str
+}
+
+User "1" --> "0..*" WorkspaceSession : 拥有
+User "1" --> "0..*" Asset : 上传
+User "1" --> "0..*" OperationRun : 产生
+User "1" --> "0..*" ActivityEvent : 触发
+WorkspaceSession "1" --> "0..*" SessionSnapshot : 包含
+WorkspaceSession "1" --> "0..*" SessionFeatureState : 保存
+WorkspaceSession "1" --> "0..*" Asset : 管理
+WorkspaceSession "1" --> "0..*" OperationRun : 记录
+WorkspaceSession "1" --> "0..*" ActivityEvent : 记录
+Asset "1" --> "0..*" AssetFile : 对应
+OperationRun "1" --> "0..*" OperationRunAsset : 关联
+Asset "1" --> "0..*" OperationRunAsset : 被引用
+@enduml
+```
+
+图 4.22 用户工作区模块相关类图
 
 ### 4.3.10 登录支撑模块设计
 
 登录支撑模块是通用支撑能力中的关键组成部分。通用支撑模块涉及登录鉴权、进度提示、任务取消和结果下载等功能。由于通用支撑模块涉及到的功能较多，此部分在登录支撑模块设计中选择登录功能进行详细描述。
 
-1. 登录：登录是用户正常访问和操作系统的前提条件。用户只有在成功登录系统后，才能够继续使用文生图、图像编辑和工作区管理等相关业务功能。首先，用户访问登录界面，并在登录界面中输入用户名与密码。然后，点击登录按钮提交登录信息。系统校验用户名和密码后生成访问令牌，并继续拉取当前用户信息与工作区列表。登录成功后，前端不会停留在独立的成功页面，而是直接进入系统主界面，默认显示文生图 Tab；登录失败时，前端在当前界面显示错误提示消息。登录序列图如图 4.14 所示。
+1. 登录：登录是用户正常访问和操作系统的前提条件。用户只有在成功登录系统后，才能够继续使用文生图、图像编辑和工作区管理等相关业务功能。首先，用户访问登录界面，并在登录界面中输入用户名与密码。然后，点击登录按钮提交登录信息。系统校验用户名和密码后生成访问令牌，并继续拉取当前用户信息与工作区列表。登录成功后，前端不会停留在独立的成功页面，而是直接进入系统主界面，默认显示文生图 Tab；登录失败时，前端在当前界面显示错误提示消息。登录序列图如图 4.23 所示。
 
 ```plantuml
 @startuml
@@ -1128,7 +1627,54 @@ end
 @enduml
 ```
 
-图 4.14 登录序列图
+图 4.23 登录序列图
+
+登录支撑模块涉及系统接口控制器（Api）类、登录请求（UserLogin）类、用户（User）类、登录令牌（TokenResponse）类和活动事件（ActivityEvent）类，其相关类设计如图 4.24 所示。
+
+```plantuml
+@startuml
+skinparam classAttributeIconSize 0
+
+class "系统接口控制器\n(Api)" as Api {
+  +api_login(req)
+  +api_me()
+}
+
+class "登录请求\n(UserLogin)" as UserLogin {
+  +username: str
+  +password: str
+}
+
+class "用户\n(User)" as User {
+  +id: str
+  +username: str
+  +email: str
+  +hashed_password: str
+  +last_login: datetime
+}
+
+class "登录令牌\n(TokenResponse)" as TokenResponse {
+  +access_token: str
+  +token_type: str
+}
+
+class "活动事件\n(ActivityEvent)" as ActivityEvent {
+  +id: str
+  +user_id: str
+  +event_type: str
+  +feature: str
+  +created_at: datetime
+}
+
+Api ..> UserLogin : 接收
+Api --> User : 校验
+Api ..> TokenResponse : 返回
+Api --> ActivityEvent : 记录
+User "1" --> "0..*" ActivityEvent : 触发
+@enduml
+```
+
+图 4.24 登录支撑模块相关类图
 
 ## 4.4 接口设计
 
@@ -1280,7 +1826,7 @@ end
 3. 一个资源与多个资源文件之间为一对多关系。
 4. 操作记录与资源之间通过操作资源关联实体形成多对多关系。
 
-系统 CDM 如图 4.15 所示，对应表示如下。
+系统 CDM 如图 4.25 所示，对应表示如下。
 
 ```mermaid
 erDiagram
@@ -1298,7 +1844,7 @@ erDiagram
     Asset ||--o{ OperationRunAsset : referenced_by
 ```
 
-图 4.15 系统 CDM 图
+图 4.25 系统 CDM 图
 
 ### 4.5.2 数据库表结构设计
 
