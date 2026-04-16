@@ -636,20 +636,20 @@ flowchart LR
 
 表格 3.4
 
-| **环境类别**       | **工具/名称与版本**                                 |
-| ------------------ | --------------------------------------------------- |
-| **操作系统**       | Windows 10 10.0.26200                               |
-| **硬件环境**       | NVIDIA GeForce RTX 4080 (16GB 显存)                 |
-| **前端开发工具**   | Visual Studio Code / Node.js v24.14.1               |
-| **后端开发环境**   | Python 3.10.11                                      |
-| **数据库系统**     | SQLite（SQLAlchemy ORM）                            |
-| **AI 核心框架**    | PyTorch 2.5.1 + CUDA 12.1                           |
-| **Web 框架**       | FastAPI 0.108.0（后端）/ React 18.2.0（前端）       |
-| **前端语言与构建** | TypeScript 5.2.2 / Vite 7.0.0                       |
+| **环境类别**       | **工具/名称与版本**                                          |
+| ------------------ | ------------------------------------------------------------ |
+| **操作系统**       | Windows 10 10.0.26200                                        |
+| **硬件环境**       | NVIDIA GeForce RTX 4080 (16GB 显存)                          |
+| **前端开发工具**   | Visual Studio Code / Node.js v24.14.1                        |
+| **后端开发环境**   | Python 3.10.11                                               |
+| **数据库系统**     | SQLite（SQLAlchemy ORM）                                     |
+| **AI 核心框架**    | PyTorch 2.5.1 + CUDA 12.1                                    |
+| **Web 框架**       | FastAPI 0.108.0（后端）/ React 18.2.0（前端）                |
+| **前端语言与构建** | TypeScript 5.2.2 / Vite 7.0.0                                |
 | **AI 算法库**      | diffusers 0.27.2、transformers 4.48.3、accelerate 1.13.0、rembg 2.0.69、opencv-python 4.11.0.86 |
-| **实时通信**       | python-socketio 5.7.2 / socket.io-client 4.7.2      |
-| **版本控制与部署** | Git                                                 |
-| **API 调试工具**   | Postman / FastAPI Swagger UI                        |
+| **实时通信**       | python-socketio 5.7.2 / socket.io-client 4.7.2               |
+| **版本控制**       | Git                                                          |
+| **API 调试工具**   | Postman / FastAPI Swagger UI                                 |
 
 # **第4章 系统设计**
 
