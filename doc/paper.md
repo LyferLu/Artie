@@ -2158,27 +2158,159 @@ erDiagram
 
 ### 4.5.2 数据库表结构设计
 
-本系统使用 SQLite 作为默认数据库，并通过 SQLAlchemy ORM 定义数据模型。相比传统“单表存图”的设计，系统围绕工作区会话组织数据，将资源文件、功能状态、操作日志和活动事件进行解耦，便于后续恢复创作现场与追踪用户行为。
+本系统使用 SQLite 作为默认数据库，并通过 SQLAlchemy ORM 定义数据模型。本系统共设计有 9 张核心业务表，其分别为：用户表（`users`）、工作区会话表（`workspace_sessions`）、会话快照表（`session_snapshots`）、功能状态表（`session_feature_states`）、资源表（`assets`）、资源文件表（`asset_files`）、操作记录表（`operation_runs`）、操作资源关联表（`operation_run_assets`）、活动事件表（`activity_events`）。各表数据结构如下：
 
-表 4.29 给出了核心数据表及其作用。
+用户表（`users`）：用于存储系统注册用户的基础信息和登录状态，包含用户 ID、用户名、邮箱、密码哈希、创建时间、最近登录时间共计 6 个字段。用户表详细信息如表 4.29 所示。
 
-表 4.29 核心数据表说明表
+表 4.29 用户表（users）
 
-| 表名 | 主要字段 | 作用说明 |
-| --- | --- | --- |
-| `users` | `id`、`username`、`email`、`hashed_password`、`created_at`、`last_login` | 存储注册用户基本信息与登录状态 |
-| `workspace_sessions` | `id`、`user_id`、`title`、`status`、`source_feature`、`current_feature`、`current_snapshot_id`、`updated_at` | 存储工作区主会话信息 |
-| `session_snapshots` | `id`、`session_id`、`active_tab`、`primary_asset_id`、`workspace_state_json`、`created_at` | 存储某次保存时的工作区快照 |
-| `session_feature_states` | `id`、`session_id`、`feature_key`、`state_json` | 存储各功能页独立参数状态 |
-| `assets` | `id`、`user_id`、`session_id`、`kind`、`origin_feature`、`width`、`height`、`metadata_json` | 记录图片资源的业务属性 |
-| `asset_files` | `id`、`asset_id`、`role`、`filename`、`storage_path`、`byte_size`、`sha256` | 记录资源在磁盘上的具体文件信息 |
-| `operation_runs` | `id`、`user_id`、`session_id`、`feature`、`operation`、`model_name`、`plugin_name`、`duration_ms`、`request_json` | 记录一次模型或插件执行过程 |
-| `operation_run_assets` | `id`、`operation_run_id`、`asset_id`、`role` | 建立操作记录与资源之间的关联 |
-| `activity_events` | `id`、`user_id`、`session_id`、`event_type`、`feature`、`detail_json` | 记录登录、恢复、删除等行为事件 |
+| 字段名 | 类型 | 是否为主键 | 是否为空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | varchar(36) | 是 | 否 | 用户 ID |
+| `username` | varchar(64) | 否 | 否 | 用户名 |
+| `email` | varchar(255) | 否 | 否 | 用户邮箱 |
+| `hashed_password` | varchar(255) | 否 | 否 | 加密后的密码 |
+| `created_at` | datetime | 否 | 否 | 创建时间 |
+| `last_login` | datetime | 否 | 是 | 最近登录时间 |
 
-从数据库实现角度看，`workspace_sessions` 是工作流主表，负责连接快照、资源和操作记录；`session_snapshots` 用于恢复某一时刻的工作现场；`session_feature_states` 则补足不同功能页独立保存参数的需求。对于图像数据本体，系统没有直接将二进制内容写入数据库，而是通过 `assets + asset_files` 两级结构保存业务元信息和磁盘路径，以减少数据库体积并提高文件管理灵活性。
+工作区会话表（`workspace_sessions`）：用于存储用户工作区的主会话信息，包含会话 ID、所属用户 ID、标题、描述、状态、来源功能、当前功能、当前快照 ID、当前主资源 ID、当前蒙版资源 ID、当前预览资源 ID、最近操作记录 ID、创建时间、更新时间、软删除时间共计 15 个字段。工作区会话表详细信息如表 4.30 所示。
 
-此外，`operation_runs` 与 `activity_events` 分别承担“算法执行追踪”和“用户行为追踪”两类职责。前者记录具体模型、插件、耗时和请求响应摘要，便于后续分析性能与排查问题；后者记录登录、恢复工作区、删除工作区等关键行为，便于实现基础审计能力。
+表 4.30 工作区会话表（workspace_sessions）
+
+| 字段名 | 类型 | 是否为主键 | 是否为空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | varchar(36) | 是 | 否 | 工作区会话 ID |
+| `user_id` | varchar(36) | 否 | 否 | 所属用户 ID |
+| `title` | varchar(255) | 否 | 否 | 工作区标题 |
+| `description` | text | 否 | 是 | 工作区描述 |
+| `status` | varchar(32) | 否 | 否 | 工作区状态 |
+| `source_feature` | varchar(64) | 否 | 否 | 工作区来源功能标识 |
+| `current_feature` | varchar(64) | 否 | 否 | 当前功能标识 |
+| `current_snapshot_id` | varchar(36) | 否 | 是 | 当前快照 ID |
+| `current_asset_id` | varchar(36) | 否 | 是 | 当前主资源 ID |
+| `current_mask_asset_id` | varchar(36) | 否 | 是 | 当前蒙版资源 ID |
+| `current_preview_asset_id` | varchar(36) | 否 | 是 | 当前预览资源 ID |
+| `last_operation_id` | varchar(36) | 否 | 是 | 最近操作记录 ID |
+| `created_at` | datetime | 否 | 否 | 创建时间 |
+| `updated_at` | datetime | 否 | 否 | 更新时间 |
+| `deleted_at` | datetime | 否 | 是 | 软删除时间 |
+
+会话快照表（`session_snapshots`）：用于存储某次保存时的工作区快照信息，包含快照 ID、所属工作区会话 ID、所属用户 ID、快照标题、激活功能页、主图资源 ID、蒙版资源 ID、预览资源 ID、资源角色映射、工作区状态、创建时间共计 11 个字段。会话快照表详细信息如表 4.31 所示。
+
+表 4.31 会话快照表（session_snapshots）
+
+| 字段名 | 类型 | 是否为主键 | 是否为空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | varchar(36) | 是 | 否 | 快照 ID |
+| `session_id` | varchar(36) | 否 | 否 | 所属工作区会话 ID |
+| `user_id` | varchar(36) | 否 | 否 | 所属用户 ID |
+| `title` | varchar(255) | 否 | 是 | 快照标题 |
+| `active_tab` | varchar(64) | 否 | 否 | 保存时激活的功能页 |
+| `primary_asset_id` | varchar(36) | 否 | 是 | 主图资源 ID |
+| `mask_asset_id` | varchar(36) | 否 | 是 | 蒙版资源 ID |
+| `preview_asset_id` | varchar(36) | 否 | 是 | 预览资源 ID |
+| `asset_roles_json` | text | 否 | 否 | 资源角色映射 JSON |
+| `workspace_state_json` | text | 否 | 否 | 工作区状态 JSON |
+| `created_at` | datetime | 否 | 否 | 创建时间 |
+
+功能状态表（`session_feature_states`）：用于存储各功能页独立保存的参数状态，包含状态 ID、所属工作区会话 ID、功能标识、状态 JSON、创建时间、更新时间共计 6 个字段。功能状态表详细信息如表 4.32 所示。
+
+表 4.32 功能状态表（session_feature_states）
+
+| 字段名 | 类型 | 是否为主键 | 是否为空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | varchar(36) | 是 | 否 | 功能状态 ID |
+| `session_id` | varchar(36) | 否 | 否 | 所属工作区会话 ID |
+| `feature_key` | varchar(64) | 否 | 否 | 功能标识 |
+| `state_json` | text | 否 | 否 | 功能状态 JSON |
+| `created_at` | datetime | 否 | 否 | 创建时间 |
+| `updated_at` | datetime | 否 | 否 | 更新时间 |
+
+资源表（`assets`）：用于存储工作区中的图片资源业务信息，包含资源 ID、所属用户 ID、所属工作区会话 ID、资源类型、来源功能、资源标签、MIME 类型、宽度、高度、元数据、创建时间共计 11 个字段。资源表详细信息如表 4.33 所示。
+
+表 4.33 资源表（assets）
+
+| 字段名 | 类型 | 是否为主键 | 是否为空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | varchar(36) | 是 | 否 | 资源 ID |
+| `user_id` | varchar(36) | 否 | 否 | 所属用户 ID |
+| `session_id` | varchar(36) | 否 | 是 | 所属工作区会话 ID |
+| `kind` | varchar(64) | 否 | 否 | 资源类型 |
+| `origin_feature` | varchar(64) | 否 | 是 | 来源功能标识 |
+| `label` | varchar(255) | 否 | 是 | 资源标签 |
+| `mime_type` | varchar(128) | 否 | 是 | 资源 MIME 类型 |
+| `width` | int | 否 | 是 | 图像宽度 |
+| `height` | int | 否 | 是 | 图像高度 |
+| `metadata_json` | text | 否 | 否 | 资源元数据 JSON |
+| `created_at` | datetime | 否 | 否 | 创建时间 |
+
+资源文件表（`asset_files`）：用于存储资源在磁盘上的文件信息，包含文件 ID、所属资源 ID、文件角色、文件名、存储路径、文件扩展名、MIME 类型、文件大小、哈希值、宽度、高度、创建时间共计 12 个字段。资源文件表详细信息如表 4.34 所示。
+
+表 4.34 资源文件表（asset_files）
+
+| 字段名 | 类型 | 是否为主键 | 是否为空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | varchar(36) | 是 | 否 | 文件 ID |
+| `asset_id` | varchar(36) | 否 | 否 | 所属资源 ID |
+| `role` | varchar(64) | 否 | 否 | 文件角色 |
+| `filename` | varchar(255) | 否 | 否 | 文件名 |
+| `storage_path` | varchar(512) | 否 | 否 | 文件存储路径 |
+| `file_ext` | varchar(16) | 否 | 是 | 文件扩展名 |
+| `mime_type` | varchar(128) | 否 | 是 | 文件 MIME 类型 |
+| `byte_size` | int | 否 | 是 | 文件大小（字节） |
+| `sha256` | varchar(64) | 否 | 是 | 文件哈希值 |
+| `width` | int | 否 | 是 | 图像宽度 |
+| `height` | int | 否 | 是 | 图像高度 |
+| `created_at` | datetime | 否 | 否 | 创建时间 |
+
+操作记录表（`operation_runs`）：用于存储一次模型推理或插件执行的运行记录，包含操作记录 ID、所属用户 ID、所属工作区会话 ID、功能标识、操作类型、模型名称、插件名称、执行状态、执行耗时、请求摘要、响应摘要、错误信息、开始时间、结束时间共计 14 个字段。操作记录表详细信息如表 4.35 所示。
+
+表 4.35 操作记录表（operation_runs）
+
+| 字段名 | 类型 | 是否为主键 | 是否为空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | varchar(36) | 是 | 否 | 操作记录 ID |
+| `user_id` | varchar(36) | 否 | 否 | 所属用户 ID |
+| `session_id` | varchar(36) | 否 | 是 | 所属工作区会话 ID |
+| `feature` | varchar(64) | 否 | 否 | 功能标识 |
+| `operation` | varchar(64) | 否 | 否 | 操作类型 |
+| `model_name` | varchar(255) | 否 | 是 | 模型名称 |
+| `plugin_name` | varchar(255) | 否 | 是 | 插件名称 |
+| `status` | varchar(32) | 否 | 否 | 执行状态 |
+| `duration_ms` | int | 否 | 是 | 执行耗时（毫秒） |
+| `request_json` | text | 否 | 否 | 请求摘要 JSON |
+| `response_json` | text | 否 | 否 | 响应摘要 JSON |
+| `error_message` | text | 否 | 是 | 错误信息 |
+| `started_at` | datetime | 否 | 否 | 开始时间 |
+| `finished_at` | datetime | 否 | 是 | 结束时间 |
+
+操作资源关联表（`operation_run_assets`）：用于建立操作记录与资源之间的关联关系，包含关联 ID、所属操作记录 ID、所属资源 ID、资源角色、创建时间共计 5 个字段。操作资源关联表详细信息如表 4.36 所示。
+
+表 4.36 操作资源关联表（operation_run_assets）
+
+| 字段名 | 类型 | 是否为主键 | 是否为空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | varchar(36) | 是 | 否 | 关联 ID |
+| `operation_run_id` | varchar(36) | 否 | 否 | 所属操作记录 ID |
+| `asset_id` | varchar(36) | 否 | 否 | 所属资源 ID |
+| `role` | varchar(64) | 否 | 否 | 资源在操作中的角色 |
+| `created_at` | datetime | 否 | 否 | 创建时间 |
+
+活动事件表（`activity_events`）：用于存储登录、恢复工作区、删除工作区等用户活动事件，包含事件 ID、所属用户 ID、所属工作区会话 ID、事件类型、关联功能标识、事件详情、创建时间共计 7 个字段。活动事件表详细信息如表 4.37 所示。
+
+表 4.37 活动事件表（activity_events）
+
+| 字段名 | 类型 | 是否为主键 | 是否为空 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | varchar(36) | 是 | 否 | 活动事件 ID |
+| `user_id` | varchar(36) | 否 | 否 | 所属用户 ID |
+| `session_id` | varchar(36) | 否 | 是 | 所属工作区会话 ID |
+| `event_type` | varchar(64) | 否 | 否 | 事件类型 |
+| `feature` | varchar(64) | 否 | 是 | 关联功能标识 |
+| `detail_json` | text | 否 | 否 | 事件详情 JSON |
+| `created_at` | datetime | 否 | 否 | 创建时间 |
+
+从系统实现角度看，上述 9 张表与当前 ORM 模型保持一致，能够完整支撑用户认证、工作区保存与恢复、图像资源管理、操作过程记录以及活动事件审计等核心业务需求。
 
 # **第5章 系统实现**
 
