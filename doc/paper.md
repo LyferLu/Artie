@@ -2609,7 +2609,25 @@ def api_run_plugin_gen_image(
     rgb_np_img, alpha_channel, infos, _ = decode_base64_to_image(req.image)
     bgr_or_rgba_np_img = self.plugins[req.name].gen_image(rgb_np_img, req)
     torch_gc()
-    ...
+    if bgr_or_rgba_np_img.shape[2] == 4:
+        rgba_np_img = bgr_or_rgba_np_img
+    else:
+        rgba_np_img = cv2.cvtColor(bgr_or_rgba_np_img, cv2.COLOR_BGR2RGB)
+        rgba_np_img = concat_alpha_channel(rgba_np_img, alpha_channel)
+
+    duration_ms = int((time.time() - start) * 1000)
+    self._create_operation_log(
+        db=db,
+        user=current_user,
+        session_id=req.session_id,
+        feature=req.name,
+        operation="plugin_image",
+        model_name=None,
+        plugin_name=req.name,
+        duration_ms=duration_ms,
+        request_data=self._safe_json(req),
+        response_data={"width": rgba_np_img.shape[1], "height": rgba_np_img.shape[0]},
+    )
     return Response(
         content=pil_to_bytes(Image.fromarray(rgba_np_img), ext="png", quality=self.config.quality, infos=infos),
         media_type="image/png",
@@ -2677,7 +2695,10 @@ class InteractiveSeg(BasePlugin):
             y = float(click[1])
             input_point.append([x, y])
             input_label.append(int(round(click[2])))
-        ...
+        if img_md5 and img_md5 != self.prev_img_md5:
+            self.prev_img_md5 = img_md5
+            self.predictor.set_image(rgb_np_img)
+
         masks, _, _ = self.predictor.predict(
             point_coords=np.array(input_point),
             point_labels=np.array(input_label),
@@ -2942,7 +2963,12 @@ def api_get_asset_file(self, asset_id: str, request: Request, db: Session = Depe
     asset = db_crud.get_asset(db, asset_id, current_user.id)
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
-    ...
+    asset_file = db_crud.get_asset_primary_file(asset)
+    if asset_file is None:
+        raise HTTPException(status_code=404, detail="Asset file not found")
+    file_path = Path(asset_file.storage_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Asset file missing on disk")
     return FileResponse(file_path, media_type=asset_file.mime_type or "image/png", filename=asset_file.filename)
 ```
 
@@ -3041,7 +3067,36 @@ const renderContent = () => {
           <OutpaintTab />
         </div>
       )
-    ...
+    case WorkspaceTab.AI_REPAINT:
+      return (
+        <div className="absolute top-0 left-[64px] right-0 bottom-0">
+          <AIRepaintTab />
+        </div>
+      )
+    case WorkspaceTab.REMOVE_BG:
+      return (
+        <div className="absolute top-[60px] left-[64px] right-0 bottom-0 overflow-y-auto">
+          <RemoveBGTab />
+        </div>
+      )
+    case WorkspaceTab.SUPER_RES:
+      return (
+        <div className="absolute top-[60px] left-[64px] right-0 bottom-0 overflow-y-auto">
+          <SuperResTab />
+        </div>
+      )
+    case WorkspaceTab.FACE_RESTORE:
+      return (
+        <div className="absolute top-[60px] left-[64px] right-0 bottom-0 overflow-y-auto">
+          <FaceRestoreTab />
+        </div>
+      )
+    case WorkspaceTab.INTERACTIVE_SEG:
+      return (
+        <div className="absolute top-0 left-[64px] right-0 bottom-0">
+          <InteractiveSegTab />
+        </div>
+      )
     case WorkspaceTab.MY_WORKSPACE:
       return (
         <div className="absolute top-[60px] left-[64px] right-0 bottom-0 overflow-hidden">
@@ -3179,7 +3234,27 @@ setActiveTab: (tab: WorkspaceTab) => {
     (FEATURE_RESULT_TABS.includes(prevTab) || canSyncFromGenerate)
   const shouldSyncImageOnTabSwitch =
     shouldSyncToFeatureTab || shouldSyncToEditorTab
-  ...
+
+  const resolveCurrentTabImage = async (): Promise<File | null> => {
+    if (prevTab === WorkspaceTab.GENERATE) {
+      const selected =
+        get().generatedImages[get().selectedGeneratedImageIndex] ??
+        get().generatedImages[0]
+      if (!selected) {
+        return get().workingImage?.file ?? null
+      }
+      if (selected.file) {
+        return selected.file
+      }
+      const response = await fetch(selected.url)
+      const blob = await response.blob()
+      return new File([blob], "generated.png", {
+        type: blob.type || "image/png",
+      })
+    }
+    return get().workingImage?.file ?? get().file ?? null
+  }
+
   if (shouldSyncImageOnTabSwitch) {
     resolveCurrentTabImage()
       .then((sourceFile) => {
@@ -3284,7 +3359,12 @@ resumeWorkspace: async (id: string) => {
       type,
     })
   }
-  ...
+  const primaryFile = await loadAssetFile(roleMap.primary)
+  const sourceFile = await loadAssetFile(roleMap.source)
+  const resultFile = await loadAssetFile(roleMap.result)
+  const maskFile = await loadAssetFile(roleMap.mask)
+  const targetTab = payload.snapshot.active_tab as WorkspaceTab
+
   if (targetTab === WorkspaceTab.GENERATE) {
     const file = primaryFile ?? sourceFile
     if (file) {
@@ -3306,8 +3386,35 @@ resumeWorkspace: async (id: string) => {
       )
     }
     if (resultFile) get().setFeatureResultImage(WorkspaceTab.REMOVE_BG, resultFile)
+  } else if (targetTab === WorkspaceTab.SUPER_RES) {
+    if (sourceFile ?? primaryFile) {
+      get().setFeatureSourceImage(
+        WorkspaceTab.SUPER_RES,
+        (sourceFile ?? primaryFile)!
+      )
+    }
+    if (resultFile) get().setFeatureResultImage(WorkspaceTab.SUPER_RES, resultFile)
+  } else if (targetTab === WorkspaceTab.FACE_RESTORE) {
+    if (sourceFile ?? primaryFile) {
+      get().setFeatureSourceImage(
+        WorkspaceTab.FACE_RESTORE,
+        (sourceFile ?? primaryFile)!
+      )
+    }
+    if (resultFile) get().setFeatureResultImage(WorkspaceTab.FACE_RESTORE, resultFile)
+  } else {
+    const file = primaryFile ?? sourceFile
+    if (file) {
+      await get().setFile(file)
+      get().setWorkingImage(file)
+    }
+    if (maskFile) {
+      const img = await blobToImage(maskFile)
+      set((state) => {
+        state.editorState.extraMasks = [castDraft(img)]
+      })
+    }
   }
-  ...
   get().setActiveTab(targetTab)
   get().resetWorkspaceDirty()
 }
@@ -3480,7 +3587,7 @@ React.useEffect(() => {
 
 图 5.9 保存确认与异常提示图（此处放截图）
 
-上传新图前的确认弹窗核心代码如下：
+前端上传确认弹窗核心代码如下：
 
 ```tsx
 <AlertDialog
@@ -3524,9 +3631,44 @@ React.useEffect(() => {
 </AlertDialog>
 ```
 
+前端文生图确认弹窗核心代码如下：
+
+```tsx
+<AlertDialog open={showGenerateConfirm} onOpenChange={setShowGenerateConfirm}>
+  <AlertDialogContent>
+    <AlertDialogHeader>
+      <AlertDialogTitle>检测到未保存的图片或工作进度</AlertDialogTitle>
+      <AlertDialogDescription>
+        是否先保存之前的图片和工作进度，再开始新的生成？
+      </AlertDialogDescription>
+    </AlertDialogHeader>
+    <AlertDialogFooter>
+      <AlertDialogCancel disabled={isSavingWorkspace}>
+        取消
+      </AlertDialogCancel>
+      <AlertDialogCancel
+        disabled={isSavingWorkspace}
+        onClick={handleGenerateWithoutSaving}
+      >
+        不保存直接生成
+      </AlertDialogCancel>
+      <AlertDialogAction
+        disabled={isSavingWorkspace}
+        onClick={(ev) => {
+          ev.preventDefault()
+          void handleSaveAndGenerate()
+        }}
+      >
+        {isSavingWorkspace ? "保存中…" : "保存后生成"}
+      </AlertDialogAction>
+    </AlertDialogFooter>
+  </AlertDialogContent>
+</AlertDialog>
+```
+
 而在任务控制方面，系统支持前端主动停止当前扩散任务。前端点击 `DiffusionProgress` 面板中的“停止”按钮后，会调用 `/api/v1/cancel-current-task`；服务端收到请求后会设置 `cancel_event`，后续推理回调检测到该标记时立即中断任务执行。
 
-取消任务的核心代码如下：
+后端取消任务核心代码如下：
 
 ```python
 def api_cancel_current_task(self):
@@ -3538,6 +3680,8 @@ def api_cancel_current_task(self):
     logger.info(f"Cancel requested for current task: {task}")
     return {"cancel_requested": True, "task": task}
 ```
+
+前端停止任务核心代码如下：
 
 ```tsx
 <Button
@@ -3558,7 +3702,7 @@ def api_cancel_current_task(self):
 
 ## 5.5 系统功能演示
 
-为了验证前述实现设计是否真正落地，本节结合当前系统实际界面，对登录、八大核心功能以及工作区功能进行演示说明。各小节均给出界面占位说明，并配套列出与该功能直接相关的核心代码。
+为了验证前述实现设计是否真正落地，本节结合当前系统实际界面，对登录、八大核心功能以及工作区功能进行演示说明。各小节均给出界面占位说明，并分别列出前端与后端核心代码，使功能演示与系统实现形成一一对应关系。
 
 ### 5.5.1 登录功能演示
 
@@ -3566,7 +3710,7 @@ def api_cancel_current_task(self):
 
 图 5.10 登录功能界面图（此处放截图）
 
-相关核心代码如下：
+前端登录功能核心代码如下：
 
 ```tsx
 const handleSubmit = async (e: FormEvent) => {
@@ -3593,13 +3737,25 @@ const handleSubmit = async (e: FormEvent) => {
 }
 ```
 
+后端登录功能核心代码如下：
+
+```python
+def api_login(self, req: UserLogin, db: Session = Depends(get_db)):
+    user = db_crud.get_user_by_username(db, req.username)
+    if not user or not verify_password(req.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Incorrect username or password")
+    db_crud.update_user_last_login(db, user)
+    self._create_activity(db=db, user=user, session_id=None, event_type="login", feature=None, detail={})
+    return TokenResponse(access_token=create_access_token(user.id))
+```
+
 ### 5.5.2 文生图功能演示
 
 文生图功能允许用户输入提示词、反向提示词、分辨率、采样步数和随机种子后生成图像。系统还额外加入了未保存进度确认逻辑，当当前存在未保存图片或工作现场时，用户点击“生成”会先弹出确认对话框，避免直接覆盖既有工作。
 
 图 5.11 文生图功能界面图（此处放截图）
 
-相关核心代码如下：
+前端文生图功能核心代码如下：
 
 ```tsx
 const handleGenerate = useCallback(() => {
@@ -3636,8 +3792,68 @@ runTxt2Img: async () => {
     seedFixed: settings.seedFixed,
     enableLCMLora: settings.enableLCMLora,
   })
-  ...
+  if (result) {
+    const response = await fetch(result.blob)
+    const blob = await response.blob()
+    const file = new File([blob], "generated.png", {
+      type: blob.type || "image/png",
+    })
+
+    set((state) => {
+      state.generatedImages.unshift({
+        url: result.blob,
+        seed: result.seed ?? "0",
+        file,
+      })
+      state.selectedGeneratedImageIndex = 0
+      state.pendingGeneratedHandoff = true
+      state.workspaceDirty = true
+    })
+    get().setWorkingImage(file)
+  }
 }
+```
+
+后端文生图功能核心代码如下：
+
+```python
+def api_txt2img(
+    self,
+    req: Txt2ImgRequest,
+    current_user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    start = time.time()
+    with self.queue_lock:
+        self._start_cancelable_task("txt2img")
+        try:
+            if req.model_name and req.model_name != self.model_manager.name:
+                self.model_manager.switch(req.model_name)
+            if self.cancel_event.is_set():
+                raise TaskCancelledError("Txt2img canceled by user")
+            bgr_np_img = self.model_manager.txt2img(req)
+        except TaskCancelledError:
+            asyncio.run(self.sio.emit("diffusion_finish"))
+            raise HTTPException(status_code=409, detail="Text-to-image generation canceled by user")
+        finally:
+            self._finish_cancelable_task()
+
+    duration_ms = int((time.time() - start) * 1000)
+    rgb_np_img = cv2.cvtColor(bgr_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
+    res_img_bytes = pil_to_bytes(Image.fromarray(rgb_np_img), ext="png", quality=self.config.quality, infos={})
+    self._create_operation_log(
+        db=db,
+        user=current_user,
+        session_id=req.session_id,
+        feature="generate",
+        operation="txt2img",
+        model_name=self.model_manager.name,
+        plugin_name=None,
+        duration_ms=duration_ms,
+        request_data=self._safe_json(req),
+        response_data={"seed": req.sd_seed, "width": req.width, "height": req.height},
+    )
+    return Response(content=res_img_bytes, media_type="image/png", headers={"X-Seed": str(req.sd_seed)})
 ```
 
 ### 5.5.3 AI 擦除功能演示
@@ -3646,7 +3862,7 @@ AI 擦除功能面向局部内容移除场景。用户上传图片后，在画�
 
 图 5.12 AI 擦除功能界面图（此处放截图）
 
-相关核心代码如下：
+前端 AI 擦除功能核心代码如下：
 
 ```tsx
 const inpaintTaskType =
@@ -3668,13 +3884,42 @@ const res = await inpaint(
 )
 ```
 
+后端 AI 擦除功能核心代码如下：
+
+```python
+def api_inpaint(
+    self,
+    req: InpaintRequest,
+    current_user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    image, alpha_channel, infos, ext = decode_base64_to_image(req.image)
+    mask, _, _, _ = decode_base64_to_image(req.mask, gray=True)
+    mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
+    task_type = req.task_type or ("outpaint" if req.use_extender else "inpaint")
+
+    with self.queue_lock:
+        self._start_cancelable_task(f"inpaint:{task_type}")
+        try:
+            if self.model_manager.name != "lama":
+                self.model_manager.switch("lama")
+            rgb_np_img = self.model_manager(image, mask, req)
+        finally:
+            self._finish_cancelable_task()
+
+    rgb_np_img = cv2.cvtColor(rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
+    rgb_res = concat_alpha_channel(rgb_np_img, alpha_channel)
+    res_img_bytes = pil_to_bytes(Image.fromarray(rgb_res), ext=ext, quality=self.config.quality, infos=infos)
+    return Response(content=res_img_bytes, media_type=f"image/{ext}", headers={"X-Seed": str(req.sd_seed)})
+```
+
 ### 5.5.4 AI 扩图功能演示
 
 AI 扩图功能用于在原图四周自动扩展画面内容。用户进入 AI 扩图页后，系统会自动开启扩图器并切换到专用扩图模型；随后用户可以拖拽扩图边界并点击运行，让系统根据扩图区域生成新的外延内容。
 
 图 5.13 AI 扩图功能界面图（此处放截图）
 
-相关核心代码如下：
+前端 AI 扩图功能核心代码如下：
 
 ```tsx
 useEffect(() => {
@@ -3689,13 +3934,30 @@ useEffect(() => {
 }, [])
 ```
 
+后端 AI 扩图功能核心代码如下：
+
+```python
+task_type = req.task_type or ("outpaint" if req.use_extender else "inpaint")
+if task_type == "outpaint":
+    req.prompt = ""
+    req.negative_prompt = ""
+
+task_model_map = {"inpaint": "lama", "outpaint": REPAINT_MODEL, "repaint": REPAINT_MODEL}
+target_model = task_model_map[task_type]
+if target_model != self.model_manager.name:
+    self.model_manager.switch(target_model)
+if task_type == "outpaint" and not self.model_manager.current_model.support_outpainting:
+    raise HTTPException(status_code=422, detail=f"Model {self.model_manager.name} does not support outpainting")
+rgb_np_img = self.model_manager(image, mask, req)
+```
+
 ### 5.5.5 AI 重绘功能演示
 
 AI 重绘功能用于在指定遮罩区域内重新生成内容。与 AI 擦除不同，AI 重绘要求用户在画布上涂抹目标区域后，再输入新的提示词，系统随后会按照提示词语义重新绘制遮罩区域内容。
 
 图 5.14 AI 重绘功能界面图（此处放截图）
 
-相关核心代码如下：
+前端 AI 重绘功能核心代码如下：
 
 ```tsx
 <Textarea
@@ -3717,13 +3979,29 @@ AI 重绘功能用于在指定遮罩区域内重新生成内容。与 AI 擦除�
 </Button>
 ```
 
+后端 AI 重绘功能核心代码如下：
+
+```python
+task_type = req.task_type or ("outpaint" if req.use_extender else "inpaint")
+target_model = REPAINT_MODEL
+if target_model != self.model_manager.name:
+    switch_variant = "default"
+    if (
+        task_type == "repaint"
+        and self.model_manager.available_models[target_model].model_type == ModelType.DIFFUSERS_SDXL
+    ):
+        switch_variant = "inpaint_compat"
+    self.model_manager.switch(target_model, variant=switch_variant)
+rgb_np_img = self.model_manager(image, mask, req)
+```
+
 ### 5.5.6 去背景功能演示
 
 去背景功能主要面向商品抠图、人物抠图等场景。用户上传图片后，可以在下拉框中选择当前去背景模型，点击“AI 去背景”后系统会通过统一插件接口调用 RemoveBG 插件，返回带透明通道的结果图。
 
 图 5.15 去背景功能界面图（此处放截图）
 
-相关核心代码如下：
+前端去背景功能核心代码如下：
 
 ```tsx
 const handleRemoveBG = async () => {
@@ -3753,13 +4031,42 @@ const handleRemoveBG = async () => {
 }
 ```
 
+后端去背景功能核心代码如下：
+
+```python
+def api_run_plugin_gen_image(
+    self,
+    req: RunPluginRequest,
+    current_user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    rgb_np_img, alpha_channel, infos, _ = decode_base64_to_image(req.image)
+    bgr_or_rgba_np_img = self.plugins[req.name].gen_image(rgb_np_img, req)
+    if bgr_or_rgba_np_img.shape[2] == 4:
+        rgba_np_img = bgr_or_rgba_np_img
+    else:
+        rgba_np_img = cv2.cvtColor(bgr_or_rgba_np_img, cv2.COLOR_BGR2RGB)
+        rgba_np_img = concat_alpha_channel(rgba_np_img, alpha_channel)
+    return Response(
+        content=pil_to_bytes(Image.fromarray(rgba_np_img), ext="png", quality=self.config.quality, infos=infos),
+        media_type="image/png",
+    )
+
+class RemoveBG(BasePlugin):
+    @torch.inference_mode()
+    def gen_image(self, rgb_np_img, req: RunPluginRequest) -> np.ndarray:
+        bgr_np_img = cv2.cvtColor(rgb_np_img, cv2.COLOR_RGB2BGR)
+        output = self.remove(self.device, bgr_np_img, session=self.session)
+        return cv2.cvtColor(output, cv2.COLOR_BGRA2RGBA)
+```
+
 ### 5.5.7 超分辨率功能演示
 
 超分辨率功能面向低清图片放大场景。用户上传图片后，系统会调用 RealESRGAN 插件对图像执行 4 倍放大，并在页面右侧显示放大结果。同时，该页面也支持结果撤销、重做和下载。
 
 图 5.16 超分辨率功能界面图（此处放截图）
 
-相关核心代码如下：
+前端超分辨率功能核心代码如下：
 
 ```tsx
 const handleUpscale = async () => {
@@ -3789,13 +4096,30 @@ const handleUpscale = async () => {
 }
 ```
 
+后端超分辨率功能核心代码如下：
+
+```python
+class RealESRGANUpscaler(BasePlugin):
+    def gen_image(self, rgb_np_img, req: RunPluginRequest) -> np.ndarray:
+        bgr_np_img = cv2.cvtColor(rgb_np_img, cv2.COLOR_RGB2BGR)
+        logger.info(f"RealESRGAN input shape: {bgr_np_img.shape}, scale: {req.scale}")
+        result = self.forward(bgr_np_img, req.scale)
+        logger.info(f"RealESRGAN output shape: {result.shape}")
+        return result
+
+    @torch.inference_mode()
+    def forward(self, bgr_np_img, scale: float):
+        upsampled = self.model.enhance(bgr_np_img, outscale=scale)[0]
+        return upsampled
+```
+
 ### 5.5.8 修复人脸功能演示
 
 修复人脸功能用于恢复模糊、低清或受损的人脸细节。若服务端同时启用了 GFPGAN 和 RestoreFormer，前端会同时展示两个按钮供用户切换；若只启用了其中一个，则只显示对应能力。用户点击后系统会调用对应插件，并把结果保存到人脸修复状态中。
 
 图 5.17 修复人脸功能界面图（此处放截图）
 
-相关核心代码如下：
+前端修复人脸功能核心代码如下：
 
 ```tsx
 const handleRestore = async (pluginName: string) => {
@@ -3825,13 +4149,32 @@ const handleRestore = async (pluginName: string) => {
 }
 ```
 
+后端修复人脸功能核心代码如下：
+
+```python
+class GFPGANPlugin(BasePlugin):
+    def gen_image(self, rgb_np_img, req: RunPluginRequest) -> np.ndarray:
+        weight = 0.5
+        bgr_np_img = cv2.cvtColor(rgb_np_img, cv2.COLOR_RGB2BGR)
+        logger.info(f"GFPGAN input shape: {bgr_np_img.shape}")
+        _, _, bgr_output = self.face_enhancer.enhance(
+            bgr_np_img,
+            has_aligned=False,
+            only_center_face=False,
+            paste_back=True,
+            weight=weight,
+        )
+        logger.info(f"GFPGAN output shape: {bgr_output.shape}")
+        return bgr_output
+```
+
 ### 5.5.9 智能选区功能演示
 
 智能选区功能用于快速生成前景掩码。用户进入智能选区页面后，可以使用左键添加前景点、右键添加背景点，系统会在每次点击后立即调用智能分割插件并刷新临时掩码。用户确认无误后点击 Accept，即可把该掩码无缝衔接到 AI 擦除或 AI 重绘等编辑功能中。
 
 图 5.18 智能选区功能界面图（此处放截图）
 
-相关核心代码如下：
+前端智能选区功能核心代码如下：
 
 ```tsx
 useEffect(() => {
@@ -3846,13 +4189,51 @@ useEffect(() => {
 </div>
 ```
 
+后端智能选区功能核心代码如下：
+
+```python
+def api_run_plugin_gen_mask(
+    self,
+    req: RunPluginRequest,
+    current_user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    rgb_np_img, _, _, _ = decode_base64_to_image(req.image)
+    bgr_or_gray_mask = self.plugins[req.name].gen_mask(rgb_np_img, req)
+    return Response(content=numpy_to_bytes(gen_frontend_mask(bgr_or_gray_mask), "png"), media_type="image/png")
+
+class InteractiveSeg(BasePlugin):
+    def gen_mask(self, rgb_np_img, req: RunPluginRequest) -> np.ndarray:
+        img_md5 = hashlib.md5(req.image.encode("utf-8")).hexdigest()
+        return self.forward(rgb_np_img, req.clicks, img_md5)
+
+    @torch.inference_mode()
+    def forward(self, rgb_np_img, clicks: List[List], img_md5: str):
+        input_point = []
+        input_label = []
+        for click in clicks:
+            x = float(click[0])
+            y = float(click[1])
+            input_point.append([x, y])
+            input_label.append(int(round(click[2])))
+        if img_md5 and img_md5 != self.prev_img_md5:
+            self.prev_img_md5 = img_md5
+            self.predictor.set_image(rgb_np_img)
+        masks, _, _ = self.predictor.predict(
+            point_coords=np.array(input_point),
+            point_labels=np.array(input_label),
+            multimask_output=False,
+        )
+        return masks[0].astype(np.uint8) * 255
+```
+
 ### 5.5.10 工作区功能演示
 
 工作区功能用于保存、管理和恢复用户的创作过程。用户可以在任意功能页点击保存，把当前图像、功能参数和工作状态写入“我的作品”；之后在工作区页中可以按标题搜索工作、查看预览、继续编辑或删除记录，也可以直接上传图片创建新的工作会话。
 
 图 5.19 工作区功能界面图（此处放截图）
 
-相关核心代码如下：
+前端工作区功能核心代码如下：
 
 ```tsx
 useEffect(() => {
@@ -3882,6 +4263,177 @@ const handleOpen = async (id: string) => {
   <Play className="h-4 w-4" />
   继续编辑
 </Button>
+```
+
+后端工作区功能核心代码如下：
+
+```python
+def api_save_workspace(
+    self,
+    req: SaveWorkspaceRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceDetailResponse:
+    session = self._require_workspace_session(db, current_user, req.session_id)
+    if session is None:
+        session = db_crud.create_workspace_session(
+            db=db,
+            user_id=current_user.id,
+            title=self._workspace_title(req.active_tab, req.title),
+            source_feature=req.active_tab,
+            current_feature=req.active_tab,
+        )
+    else:
+        db_crud.touch_workspace_session(
+            db,
+            session,
+            title=self._workspace_title(req.active_tab, req.title),
+            current_feature=req.active_tab,
+        )
+    asset_roles: dict[str, str] = {}
+    for asset in req.assets:
+        created = self._create_asset_from_upload(
+            db=db,
+            user=current_user,
+            session_id=session.id,
+            active_tab=req.active_tab,
+            role=asset.role,
+            kind=asset.kind,
+            data_url=asset.data,
+            filename=asset.filename,
+            label=asset.label,
+            width=asset.width,
+            height=asset.height,
+            mime_type=asset.mime_type,
+            metadata=asset.metadata,
+        )
+        asset_roles[asset.role] = created.id
+    primary_asset_id = asset_roles.get("primary") or asset_roles.get("result") or asset_roles.get("source")
+    mask_asset_id = asset_roles.get("mask")
+    preview_asset_id = asset_roles.get("preview") or primary_asset_id
+    snapshot = db_crud.create_snapshot(
+        db=db,
+        session_id=session.id,
+        user_id=current_user.id,
+        title=req.title,
+        active_tab=req.active_tab,
+        primary_asset_id=primary_asset_id,
+        mask_asset_id=mask_asset_id,
+        preview_asset_id=preview_asset_id,
+        asset_roles=asset_roles,
+        workspace_state=req.workspace_state,
+    )
+    db_crud.upsert_feature_states(db, session.id, req.settings_by_feature)
+    db_crud.touch_workspace_session(
+        db,
+        session,
+        title=self._workspace_title(req.active_tab, req.title),
+        current_feature=req.active_tab,
+        current_snapshot_id=snapshot.id,
+        current_asset_id=primary_asset_id,
+        current_mask_asset_id=mask_asset_id,
+        current_preview_asset_id=preview_asset_id,
+    )
+    op = self._create_operation_log(
+        db=db,
+        user=current_user,
+        session_id=session.id,
+        feature=req.active_tab,
+        operation="manual_save",
+        model_name=None,
+        plugin_name=None,
+        duration_ms=None,
+        request_data={"asset_roles": list(asset_roles.keys())},
+        response_data={"snapshot_id": snapshot.id},
+    )
+    if op:
+        db_crud.touch_workspace_session(db, session, last_operation_id=op.id)
+    self._create_activity(
+        db=db,
+        user=current_user,
+        session_id=session.id,
+        event_type="manual_save",
+        feature=req.active_tab,
+        detail={"snapshot_id": snapshot.id},
+    )
+    fresh = db_crud.get_workspace_session(db, session.id, current_user.id)
+    latest_snapshot = next((item for item in fresh.snapshots if item.id == fresh.current_snapshot_id), None)
+    operations = [self._operation_to_response(item) for item in db_crud.list_operation_runs(db, fresh.id, current_user.id, 50)]
+    return WorkspaceDetailResponse(
+        session=self._session_to_summary(fresh),
+        latest_snapshot=self._snapshot_to_response(latest_snapshot),
+        feature_states=db_crud.get_feature_states_map(fresh),
+        operations=operations,
+    )
+
+def api_import_workspace(
+    self,
+    file: UploadFile,
+    title: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceImportResponse:
+    content = file.file.read()
+    guessed_type = file.content_type or "image/png"
+    data_url = f"data:{guessed_type};base64,{base64.b64encode(content).decode('utf-8')}"
+    session = db_crud.create_workspace_session(
+        db=db,
+        user_id=current_user.id,
+        title=self._workspace_title("inpaint", title or file.filename),
+        source_feature="inpaint",
+        current_feature="inpaint",
+    )
+    asset = self._create_asset_from_upload(
+        db=db,
+        user=current_user,
+        session_id=session.id,
+        active_tab="inpaint",
+        role="primary",
+        kind="uploaded",
+        data_url=data_url,
+        filename=file.filename,
+        label=file.filename,
+        width=None,
+        height=None,
+        mime_type=guessed_type,
+        metadata={},
+    )
+    snapshot = db_crud.create_snapshot(
+        db=db,
+        session_id=session.id,
+        user_id=current_user.id,
+        title=title,
+        active_tab="inpaint",
+        primary_asset_id=asset.id,
+        mask_asset_id=None,
+        preview_asset_id=asset.id,
+        asset_roles={"primary": asset.id, "source": asset.id, "preview": asset.id},
+        workspace_state={"imported": True},
+    )
+    return WorkspaceImportResponse(id=snapshot.id, name=file.filename or "uploaded", session_id=session.id, asset_id=asset.id, created_at=snapshot.created_at)
+
+def api_resume_workspace(
+    self,
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceResumeResponse:
+    session = self._require_workspace_session(db, current_user, session_id)
+    snapshot = next((item for item in session.snapshots if item.id == session.current_snapshot_id), None)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Workspace snapshot not found")
+    asset_ids = set(db_crud.loads_json(snapshot.asset_roles_json, {}).values())
+    assets: dict[str, WorkspaceAssetInfo] = {}
+    for asset_id in asset_ids:
+        asset = db_crud.get_asset(db, asset_id, current_user.id)
+        if asset:
+            assets[asset.id] = self._asset_to_response(asset)
+    return WorkspaceResumeResponse(
+        session=self._session_to_summary(session),
+        snapshot=self._snapshot_to_response(snapshot),
+        feature_states=db_crud.get_feature_states_map(session),
+        assets=assets,
+    )
 ```
 
 # **第6章 系统测试**
