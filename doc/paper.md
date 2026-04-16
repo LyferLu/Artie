@@ -2418,85 +2418,1471 @@ erDiagram
 
 ### 5.2.1 FastAPI 路由与请求校验实现
 
-后端接口统一注册在 `artie/api.py` 中，核心路由包括 `/api/v1/txt2img`、`/api/v1/inpaint`、`/api/v1/run_plugin_gen_image`、`/api/v1/run_plugin_gen_mask`、`/api/v1/workspaces/save`、`/api/v1/workspaces/{session_id}/resume` 以及认证相关接口。各接口在进入业务逻辑之前都会经过 Pydantic 模型校验，确保提示词、图像参数、扩图尺寸、随机种子和插件参数满足预期范围。
+服务端接口统一集中在 `artie/api.py` 的 `Api` 类中注册。系统启动后，`Api.__init__` 会将文生图、编辑类、插件类、工作区类、认证类和资源访问类接口一次性挂载到 `/api/v1` 路由前缀下。这样的实现方式有两个直接收益：其一，前端所有功能都可以通过统一的 API 前缀进行访问；其二，后续增加新能力时只需要在同一入口补充路由和处理函数即可。
 
-例如，`Txt2ImgRequest` 定义了提示词、输出尺寸、采样步数、采样器和随机种子等字段；`InpaintRequest` 则在其基础上增加了图像、蒙版、扩图参数、重绘参数以及 ControlNet、BrushNet、PowerPaint 等扩展选项。这样做的好处在于，前端各功能虽然表现形式不同，但在服务端都可以映射到清晰一致的数据协议。
+服务端集中注册路由的核心代码如下：
+
+```python
+class Api:
+    def __init__(self, app: FastAPI, config: ApiConfig):
+        self.add_api_route("/api/v1/inpaint", self.api_inpaint, methods=["POST"])
+        self.add_api_route("/api/v1/txt2img", self.api_txt2img, methods=["POST"])
+        self.add_api_route("/api/v1/run_plugin_gen_mask", self.api_run_plugin_gen_mask, methods=["POST"])
+        self.add_api_route("/api/v1/run_plugin_gen_image", self.api_run_plugin_gen_image, methods=["POST"])
+        self.add_api_route("/api/v1/auth/register", self.api_register, methods=["POST"], response_model=UserResponse)
+        self.add_api_route("/api/v1/auth/login", self.api_login, methods=["POST"], response_model=TokenResponse)
+        self.add_api_route("/api/v1/auth/me", self.api_me, methods=["GET"], response_model=UserResponse)
+        self.add_api_route("/api/v1/workspaces", self.api_list_workspaces, methods=["GET"])
+        self.add_api_route("/api/v1/workspaces/save", self.api_save_workspace, methods=["POST"], response_model=WorkspaceDetailResponse)
+        self.add_api_route("/api/v1/workspaces/import", self.api_import_workspace, methods=["POST"], response_model=WorkspaceImportResponse)
+        self.add_api_route("/api/v1/workspaces/{session_id}/resume", self.api_resume_workspace, methods=["POST"], response_model=WorkspaceResumeResponse)
+        self.add_api_route("/api/v1/assets/{asset_id}/file", self.api_get_asset_file, methods=["GET"])
+```
+
+在请求校验方面，系统没有把参数约束散落到各个处理函数中，而是借助 `schema.py` 中的 Pydantic 模型统一完成协议定义和数据校验。以文生图请求为例，`Txt2ImgRequest` 不仅约束了提示词、尺寸、采样步数和引导系数，还在随机种子为 `-1` 时自动生成真实随机种子。这样可以保证前端传参不完整时，后端仍然能得到结构稳定的请求对象。
+
+文生图请求校验的核心代码如下：
+
+```python
+class Txt2ImgRequest(BaseModel):
+    session_id: Optional[str] = Field(None, description="Active workspace session")
+    prompt: str = Field(..., description="Text prompt for image generation")
+    negative_prompt: str = Field("", description="Negative prompt")
+    model_name: Optional[str] = Field(None, description="Target model name for text-to-image generation")
+    width: int = Field(512, ge=64, le=2048, description="Output image width")
+    height: int = Field(512, ge=64, le=2048, description="Output image height")
+    sd_steps: int = Field(50, description="Number of denoising steps")
+    sd_guidance_scale: float = Field(7.5, description="Guidance scale")
+    sd_sampler: str = Field(SDSampler.uni_pc, description="Sampler for diffusion model")
+    sd_seed: int = Field(42, description="Seed for generation. -1 means random seed")
+    sd_lcm_lora: bool = Field(False, description="Enable LCM-LoRA acceleration")
+
+    @model_validator(mode="after")
+    def validate_field(cls, values: "Txt2ImgRequest"):
+        if values.sd_seed == -1:
+            values.sd_seed = random.randint(1, 99999999)
+            logger.info(f"Generate random seed: {values.sd_seed}")
+        return values
+```
+
+在真正执行业务时，`api_txt2img` 会先校验目标模型是否支持文生图，再根据请求参数完成模型切换和生成；`api_inpaint` 则会根据 `task_type` 在 AI 擦除、AI 扩图和 AI 重绘之间分流。由此可以看出，系统虽然前端存在多个不同功能页，但服务端最终仍然通过统一协议完成处理。
+
+文生图接口处理的核心代码如下：
+
+```python
+def api_txt2img(
+    self,
+    req: Txt2ImgRequest,
+    current_user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    start = time.time()
+    with self.queue_lock:
+        self._start_cancelable_task("txt2img")
+        try:
+            before_model = self.model_manager.name
+            target_model = req.model_name or self.model_manager.name
+            switched = False
+            if req.model_name:
+                if req.model_name not in self.model_manager.available_models:
+                    raise HTTPException(status_code=422, detail=f"Requested model is not available: {req.model_name}")
+                if not self.model_manager.available_models[req.model_name].support_txt2img:
+                    raise HTTPException(status_code=422, detail=f"Requested model {req.model_name} does not support text-to-image generation")
+                if req.model_name != self.model_manager.name:
+                    self.model_manager.switch(req.model_name)
+                    switched = True
+            if not self.model_manager.current_model.support_txt2img:
+                raise HTTPException(status_code=422, detail=f"Current model {self.model_manager.name} does not support text-to-image generation")
+            if self.cancel_event.is_set():
+                raise TaskCancelledError("Txt2img canceled by user")
+            bgr_np_img = self.model_manager.txt2img(req)
+        except TaskCancelledError:
+            asyncio.run(self.sio.emit("diffusion_finish"))
+            raise HTTPException(status_code=409, detail="Text-to-image generation canceled by user")
+        finally:
+            self._finish_cancelable_task()
+```
 
 ### 5.2.2 模型调度与显存缓存实现
 
-由于系统同时集成 LaMa、Stable Diffusion、SDXL 等多类模型，若对模型进行频繁重复加载，会显著增加等待时间并导致显存抖动。为此，系统在 `artie/model_manager.py` 中实现了 `ModelCache`，采用近似 LRU 的方式缓存最近使用的模型实例，并根据最大缓存数量和显存上限自动淘汰最久未使用模型。
+本系统同时集成了 LaMa、Stable Diffusion、SDXL 以及 PowerPaint 等多类模型。如果每次切换功能时都重新加载模型，不仅会显著拉长等待时间，还会造成显存频繁抖动。为解决这一问题，系统在 `artie/model_manager.py` 中实现了 `ModelCache`，使用近似 LRU 的缓存策略来复用最近使用的模型实例。
 
-该机制的实现思路如下：
+`ModelCache` 的核心职责包括缓存读取、缓存写入、按容量和显存上限淘汰旧模型，以及记录各模型的显存占用估计值。其实现并非简单地按模型名称缓存，而是通过缓存键把模型名称与变体信息一起编码，因而能够兼容 ControlNet、BrushNet 等扩展场景。
 
-1. 每个模型根据名称和功能变体构造缓存键。
-2. 若缓存命中，则直接复用已加载模型。
-3. 若缓存未命中，则先检查当前显存占用，再按顺序淘汰旧模型。
-4. 新模型加载完成后写入缓存，并记录显存占用估计值。
+模型缓存的核心代码如下：
 
-这种实现使系统能够在“文生图”和“编辑类任务”之间切换时尽量减少重复初始化成本。实际运行日志中可看到模型切换、缓存命中与 LRU 淘汰信息，这也说明该设计在工程层面已经真实投入使用。
+```python
+class ModelCache:
+    def __init__(
+        self,
+        device: torch.device,
+        max_models: int = 3,
+        max_vram_gb: Optional[float] = None,
+    ):
+        self.device = device
+        self.max_models = max(1, max_models)
+        self.max_vram_gb = max_vram_gb or self._detect_vram_limit()
+        self._cache: OrderedDict = OrderedDict()
+        self._model_vram_gb: Dict[str, float] = {}
+
+    def get(self, key: str):
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            logger.info(f"ModelCache hit: {key}")
+            return self._cache[key]
+        return None
+
+    def put(self, key: str, model, vram_gb: float):
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            self._cache[key] = model
+            self._model_vram_gb[key] = vram_gb
+            return
+
+        self._evict_if_needed(vram_gb)
+        self._cache[key] = model
+        self._model_vram_gb[key] = vram_gb
+        logger.info(
+            f"ModelCache stored: {key} ({vram_gb:.2f} GB). "
+            f"Cache size: {len(self._cache)}/{self.max_models}"
+        )
+
+    def _evict_if_needed(self, needed_gb: float):
+        while self._cache and (
+            len(self._cache) >= self.max_models
+            or self._current_allocated_gb() + needed_gb > self.max_vram_gb
+        ):
+            evicted_key, evicted_model = self._cache.popitem(last=False)
+            evicted_vram = self._model_vram_gb.pop(evicted_key, 0.0)
+            del evicted_model
+            gc.collect()
+            torch_gc()
+            logger.info(
+                f"ModelCache evicted LRU: {evicted_key} ({evicted_vram:.2f} GB freed)"
+            )
+```
+
+在接口执行过程中，模型切换是按任务类型动态触发的。文生图接口会根据 `req.model_name` 决定是否切换模型；编辑接口则会根据任务类型把 AI 擦除映射到 `lama`，把 AI 扩图和 AI 重绘映射到重绘模型。这样的设计保证了前端只需要表达“我要做什么”，而具体使用哪一个底层模型由后端统一决定。
+
+任务驱动模型切换的核心代码如下：
+
+```python
+if req.model_name:
+    if req.model_name != self.model_manager.name:
+        self.model_manager.switch(req.model_name)
+        switched = True
+
+task_model_map = {"inpaint": "lama", "outpaint": REPAINT_MODEL, "repaint": REPAINT_MODEL}
+if target_model != self.model_manager.name:
+    switch_variant = "default"
+    if (
+        task_type == "repaint"
+        and self.model_manager.available_models[target_model].model_type == ModelType.DIFFUSERS_SDXL
+    ):
+        switch_variant = "inpaint_compat"
+    self.model_manager.switch(target_model, variant=switch_variant)
+    switched = True
+```
+
+从运行日志可以看到，系统在文生图与编辑类任务之间切换时会输出 `ModelCache stored`、`ModelCache hit` 和 `ModelCache evicted LRU` 等信息，说明该缓存机制已经在当前系统中真实生效。
 
 ### 5.2.3 插件式图像处理实现
 
-去背景、超分辨率、修复人脸和智能选区并未与文生图模型耦合在一起，而是采用插件方式集成。服务端启动时根据配置调用 `build_plugins` 创建插件集合，不同插件暴露 `gen_image` 或 `gen_mask` 两类统一接口。当前系统已接入 RemoveBG、RealESRGAN、GFPGAN、RestoreFormer 和交互式分割等插件。
+去背景、超分辨率、修复人脸和智能选区并没有与文生图模型耦合在一起，而是统一实现为插件。服务端启动时，`Api._build_plugins()` 会根据配置构建插件集合，之后前端无论调用去背景、超分辨率还是智能选区，最终都通过统一的插件接口进入服务端。
 
-插件化设计带来了两点直接收益：其一，非编辑类功能可以通过统一的 `run_plugin_gen_image` 接口复用调用链路；其二，智能选区可以通过 `run_plugin_gen_mask` 与编辑画布共享蒙版表示，从而自然衔接到 AI擦除和 AI重绘功能中。
+插件调用的第一层统一入口在 `api_run_plugin_gen_image` 和 `api_run_plugin_gen_mask` 中。这两个接口负责检查插件是否存在、是否支持当前输出类型、解码前端上传的图像，并在插件执行完成后把结果重新封装为前端可直接显示的 PNG 数据。
+
+插件统一调度的核心代码如下：
+
+```python
+def api_run_plugin_gen_image(
+    self,
+    req: RunPluginRequest,
+    current_user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    if req.name not in self.plugins:
+        raise HTTPException(status_code=422, detail="Plugin not found")
+    if not self.plugins[req.name].support_gen_image:
+        raise HTTPException(status_code=422, detail="Plugin does not support output image")
+    start = time.time()
+    rgb_np_img, alpha_channel, infos, _ = decode_base64_to_image(req.image)
+    bgr_or_rgba_np_img = self.plugins[req.name].gen_image(rgb_np_img, req)
+    torch_gc()
+    ...
+    return Response(
+        content=pil_to_bytes(Image.fromarray(rgba_np_img), ext="png", quality=self.config.quality, infos=infos),
+        media_type="image/png",
+    )
+
+def api_run_plugin_gen_mask(
+    self,
+    req: RunPluginRequest,
+    current_user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    if req.name not in self.plugins:
+        raise HTTPException(status_code=422, detail="Plugin not found")
+    if not self.plugins[req.name].support_gen_mask:
+        raise HTTPException(status_code=422, detail="Plugin does not support output image")
+    rgb_np_img, _, _, _ = decode_base64_to_image(req.image)
+    bgr_or_gray_mask = self.plugins[req.name].gen_mask(rgb_np_img, req)
+    return Response(content=numpy_to_bytes(gen_frontend_mask(bgr_or_gray_mask), "png"), media_type="image/png")
+```
+
+在插件内部，不同能力又各自保留了独立的模型初始化和推理逻辑。例如，RemoveBG 会根据选择的模型决定使用 Bria RMBG 还是 rembg 的会话；InteractiveSeg 会读取前端点击点集合并即时返回分割掩码。这种结构使得插件既保留了通用接入方式，又不会损失算法自身的独立性。
+
+去背景与智能选区插件的核心代码如下：
+
+```python
+class RemoveBG(BasePlugin):
+    name = "RemoveBG"
+    support_gen_mask = True
+    support_gen_image = True
+
+    def _init_session(self, model_name: str):
+        if model_name == RemoveBGModel.briaai_rmbg_1_4:
+            from artie.plugins.briarmbg import create_briarmbg_session, briarmbg_process
+            self.session = create_briarmbg_session(local_files_only=self.local_files_only).to(self.device)
+            self.remove = briarmbg_process
+        elif model_name == RemoveBGModel.briaai_rmbg_2_0:
+            from artie.plugins.briarmbg2 import create_briarmbg2_session, briarmbg2_process
+            self.session = create_briarmbg2_session(local_files_only=self.local_files_only).to(self.device)
+            self.remove = briarmbg2_process
+        else:
+            from rembg import new_session
+            self.session = new_session(model_name=model_name)
+            self.remove = _rmbg_remove
+
+    @torch.inference_mode()
+    def gen_image(self, rgb_np_img, req: RunPluginRequest) -> np.ndarray:
+        bgr_np_img = cv2.cvtColor(rgb_np_img, cv2.COLOR_RGB2BGR)
+        output = self.remove(self.device, bgr_np_img, session=self.session)
+        return cv2.cvtColor(output, cv2.COLOR_BGRA2RGBA)
+
+class InteractiveSeg(BasePlugin):
+    name = "InteractiveSeg"
+    support_gen_mask = True
+
+    def gen_mask(self, rgb_np_img, req: RunPluginRequest) -> np.ndarray:
+        img_md5 = hashlib.md5(req.image.encode("utf-8")).hexdigest()
+        return self.forward(rgb_np_img, req.clicks, img_md5)
+
+    @torch.inference_mode()
+    def forward(self, rgb_np_img, clicks: List[List], img_md5: str):
+        input_point = []
+        input_label = []
+        for click in clicks:
+            x = float(click[0])
+            y = float(click[1])
+            input_point.append([x, y])
+            input_label.append(int(round(click[2])))
+        ...
+        masks, _, _ = self.predictor.predict(
+            point_coords=np.array(input_point),
+            point_labels=np.array(input_label),
+            multimask_output=False,
+        )
+        mask = masks[0].astype(np.uint8) * 255
+        return mask
+```
+
+超分辨率与修复人脸也采用同样的插件组织方式。前者通过 `RealESRGANUpscaler` 对输入图像进行 4 倍放大，后者则通过 `GFPGANPlugin` 或 `RestoreFormerPlugin` 完成人脸细节恢复。这样一来，四类非扩散能力都可以在同一框架下被管理、切换和记录。
+
+超分辨率与人脸修复的核心代码如下：
+
+```python
+class RealESRGANUpscaler(BasePlugin):
+    def gen_image(self, rgb_np_img, req: RunPluginRequest) -> np.ndarray:
+        bgr_np_img = cv2.cvtColor(rgb_np_img, cv2.COLOR_RGB2BGR)
+        logger.info(f"RealESRGAN input shape: {bgr_np_img.shape}, scale: {req.scale}")
+        result = self.forward(bgr_np_img, req.scale)
+        logger.info(f"RealESRGAN output shape: {result.shape}")
+        return result
+
+class GFPGANPlugin(BasePlugin):
+    def gen_image(self, rgb_np_img, req: RunPluginRequest) -> np.ndarray:
+        weight = 0.5
+        bgr_np_img = cv2.cvtColor(rgb_np_img, cv2.COLOR_RGB2BGR)
+        logger.info(f"GFPGAN input shape: {bgr_np_img.shape}")
+        _, _, bgr_output = self.face_enhancer.enhance(
+            bgr_np_img,
+            has_aligned=False,
+            only_center_face=False,
+            paste_back=True,
+            weight=weight,
+        )
+        logger.info(f"GFPGAN output shape: {bgr_output.shape}")
+        return bgr_output
+```
 
 ### 5.2.4 工作区持久化与资源管理实现
 
-为了支持“保存后继续编辑”和“跨功能恢复现场”，系统实现了工作区持久化机制。当前端触发保存操作时，会调用 `/api/v1/workspaces/save`，并提交当前功能页、各功能参数状态以及主图、蒙版、预览图等资源。服务端收到请求后会创建或更新工作区会话，再写入一条新的会话快照，并同步更新会话当前指针。
+工作区是本系统区别于普通单次图像处理工具的重要实现点。系统不仅保存最终图片，还同时保存当前功能页、各功能参数、蒙版、预览图以及会话操作记录。当前端点击“保存到我的作品”时，会将当前状态封装为 `SaveWorkspaceRequest` 并提交给 `/api/v1/workspaces/save`，服务端随后创建或更新工作区会话、写入资源、生成快照并更新当前快照指针。
 
-在资源管理方面，系统采用“资源元信息 + 磁盘文件”的两级结构：数据库中的 `assets` 和 `asset_files` 保存资源的业务属性、文件路径、尺寸和哈希等信息，真实图像文件则写入本地存储目录。恢复工作区时，服务端根据快照中的资源角色映射重新组装前端所需数据；访问图片文件时，则通过受控的资产文件接口返回对应图像。
+工作区保存的服务端核心代码如下：
+
+```python
+def api_save_workspace(
+    self,
+    req: SaveWorkspaceRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceDetailResponse:
+    session = self._require_workspace_session(db, current_user, req.session_id)
+    if session is None:
+        session = db_crud.create_workspace_session(
+            db=db,
+            user_id=current_user.id,
+            title=self._workspace_title(req.active_tab, req.title),
+            source_feature=req.active_tab,
+            current_feature=req.active_tab,
+        )
+    else:
+        db_crud.touch_workspace_session(
+            db,
+            session,
+            title=self._workspace_title(req.active_tab, req.title),
+            current_feature=req.active_tab,
+        )
+
+    asset_roles: dict[str, str] = {}
+    for asset in req.assets:
+        created = self._create_asset_from_upload(
+            db=db,
+            user=current_user,
+            session_id=session.id,
+            active_tab=req.active_tab,
+            role=asset.role,
+            kind=asset.kind,
+            data_url=asset.data,
+            filename=asset.filename,
+            label=asset.label,
+            width=asset.width,
+            height=asset.height,
+            mime_type=asset.mime_type,
+            metadata=asset.metadata,
+        )
+        asset_roles[asset.role] = created.id
+
+    snapshot = db_crud.create_snapshot(
+        db=db,
+        session_id=session.id,
+        user_id=current_user.id,
+        title=req.title,
+        active_tab=req.active_tab,
+        primary_asset_id=primary_asset_id,
+        mask_asset_id=mask_asset_id,
+        preview_asset_id=preview_asset_id,
+        asset_roles=asset_roles,
+        workspace_state=req.workspace_state,
+    )
+    db_crud.upsert_feature_states(db, session.id, req.settings_by_feature)
+```
+
+除了保存，系统还支持直接上传图片创建新工作区。前端在“我的作品”页点击“上传新图片”时，会调用 `/api/v1/workspaces/import`，服务端会立即创建一个新的工作区会话，并把上传图片同时记录为 `primary`、`source` 和 `preview` 资产，从而使该图片能够立刻被恢复到编辑场景中。
+
+工作区导入的服务端核心代码如下：
+
+```python
+def api_import_workspace(
+    self,
+    file: UploadFile,
+    title: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceImportResponse:
+    content = file.file.read()
+    guessed_type = file.content_type or "image/png"
+    data_url = f"data:{guessed_type};base64,{base64.b64encode(content).decode('utf-8')}"
+    session = db_crud.create_workspace_session(
+        db=db,
+        user_id=current_user.id,
+        title=self._workspace_title("inpaint", title or file.filename),
+        source_feature="inpaint",
+        current_feature="inpaint",
+    )
+    asset = self._create_asset_from_upload(
+        db=db,
+        user=current_user,
+        session_id=session.id,
+        active_tab="inpaint",
+        role="primary",
+        kind="uploaded",
+        data_url=data_url,
+        filename=file.filename,
+        label=file.filename,
+        width=None,
+        height=None,
+        mime_type=guessed_type,
+        metadata={},
+    )
+    snapshot = db_crud.create_snapshot(
+        db=db,
+        session_id=session.id,
+        user_id=current_user.id,
+        title=title,
+        active_tab="inpaint",
+        primary_asset_id=asset.id,
+        mask_asset_id=None,
+        preview_asset_id=asset.id,
+        asset_roles={"primary": asset.id, "source": asset.id, "preview": asset.id},
+        workspace_state={"imported": True},
+    )
+```
+
+当用户从“我的作品”点击“继续编辑”时，前端会调用 `/api/v1/workspaces/{session_id}/resume`。服务端并不是简单地返回一张图片，而是返回会话摘要、当前快照、各功能状态以及角色化资产映射。这样一来，前端既能恢复图像，也能恢复文生图结果索引、去背景选定模型、超分辨率选定模型以及蒙版等上下文状态。
+
+工作区恢复的服务端核心代码如下：
+
+```python
+def api_resume_workspace(
+    self,
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceResumeResponse:
+    session = self._require_workspace_session(db, current_user, session_id)
+    snapshot = next((item for item in session.snapshots if item.id == session.current_snapshot_id), None)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Workspace snapshot not found")
+    asset_ids = set(db_crud.loads_json(snapshot.asset_roles_json, {}).values())
+    assets: dict[str, WorkspaceAssetInfo] = {}
+    for asset_id in asset_ids:
+        asset = db_crud.get_asset(db, asset_id, current_user.id)
+        if asset:
+            assets[asset.id] = self._asset_to_response(asset)
+    self._create_activity(db=db, user=current_user, session_id=session.id, event_type="resume", feature=snapshot.active_tab, detail={"snapshot_id": snapshot.id})
+    return WorkspaceResumeResponse(
+        session=self._session_to_summary(session),
+        snapshot=self._snapshot_to_response(snapshot),
+        feature_states=db_crud.get_feature_states_map(session),
+        assets=assets,
+    )
+```
 
 ### 5.2.5 JWT 鉴权与资源访问控制实现
 
-由于本系统要求用户注册登录后才能使用，服务端在 `artie/auth.py` 中实现了基于 JWT 的认证方案。用户注册时写入 `users` 表，登录成功后返回访问令牌，之后前端通过 `Authorization` 请求头访问业务接口。`/api/v1/auth/me` 用于恢复当前登录用户信息，使页面刷新后仍可维持登录状态。
+系统要求用户注册并登录后方可使用，因此服务端在 `artie/auth.py` 中实现了基于 JWT 的鉴权方案。用户登录成功后，后端会以用户 ID 为 `sub` 字段生成访问令牌；后续接口通过 `Authorization: Bearer <token>` 请求头解析当前用户。若令牌缺失、失效或用户不存在，接口将直接返回 `401`。
 
-考虑到图片文件往往通过浏览器直接请求，系统在资源文件读取接口中同时支持通过请求头或查询参数解析令牌。这样一来，既保证了工作区资产不被匿名访问，也避免了图片回显时必须走额外的代理层。
+JWT 生成与鉴权的核心代码如下：
+
+```python
+def create_access_token(user_id: str, expires_delta: Optional[timedelta] = None) -> str:
+    from jose import jwt
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=_ACCESS_TOKEN_EXPIRE_MINUTES))
+    payload = {"sub": user_id, "exp": expire}
+    return jwt.encode(payload, _SECRET_KEY, algorithm=_ALGORITHM)
+
+def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> User:
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user_id = decode_access_token(credentials.credentials)
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    from artie.db.crud import get_user_by_id
+    user = get_user_by_id(db, user_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    return user
+```
+
+登录接口本身比较简洁：先校验用户名和密码，再更新最近登录时间并返回令牌。前端拿到令牌后会保存到状态仓库，并继续调用 `/api/v1/auth/me` 获取用户信息，从而完成登录状态建立。
+
+登录接口的核心代码如下：
+
+```python
+def api_login(self, req: UserLogin, db: Session = Depends(get_db)):
+    user = db_crud.get_user_by_username(db, req.username)
+    if not user or not verify_password(req.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Incorrect username or password")
+    db_crud.update_user_last_login(db, user)
+    self._create_activity(db=db, user=user, session_id=None, event_type="login", feature=None, detail={})
+    return TokenResponse(access_token=create_access_token(user.id))
+```
+
+由于工作区中的预览图和结果图需要被浏览器直接显示，系统还对资源访问做了额外处理。资源文件接口既支持从 `Authorization` 请求头读取令牌，也支持从查询参数 `token` 中读取令牌。这样一来，普通 JSON 接口和图片文件接口都能遵守同一套用户隔离规则。
+
+资源访问控制的核心代码如下：
+
+```python
+def _resolve_asset_request_user(self, request: Request, db: Session) -> User:
+    token = request.query_params.get("token")
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1]
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id = decode_access_token(token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user = db_crud.get_user_by_id(db, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+def api_get_asset_file(self, asset_id: str, request: Request, db: Session = Depends(get_db)):
+    current_user = self._resolve_asset_request_user(request, db)
+    asset = db_crud.get_asset(db, asset_id, current_user.id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    ...
+    return FileResponse(file_path, media_type=asset_file.mime_type or "image/png", filename=asset_file.filename)
+```
 
 ## 5.3 前端交互与状态管理实现
 
 ### 5.3.1 页面框架与功能 Tab 实现
 
-前端入口位于 `web_app/src/main.tsx`，应用启动时通过 `QueryClientProvider` 注入 React Query，通过 `ThemeProvider` 和 `TooltipProvider` 注入主题与提示能力。`App.tsx` 在初始化阶段先读取服务端配置，再恢复用户会话，然后进入主界面。当前系统将“文生图”设为默认标签页，对应 `states.ts` 中的 `activeTab: WorkspaceTab.GENERATE`。
+前端主界面由 `Header`、左侧功能导航栏和右侧内容区组成，核心装配逻辑位于 `MainLayout.tsx`。系统把八大功能和“我的作品”全部组织为独立 Tab，并通过 `visible` 回调控制功能是否显示。例如，当服务端未启用去背景插件时，去背景标签不会在左侧栏中出现；当当前服务器存在可用文生图模型时，“文生图”标签才会展示。
 
-页面主框架由 `Header`、`MainLayout` 和不同功能 Tab 组成。对于 AI擦除、AI扩图、AI重绘和智能选区这类必须依赖输入图像的页面，应用会在未加载图片时显示浮动的 `FileSelect` 组件，用于上传、拖拽或粘贴图片，从而保持与编辑画布一致的交互体验。
+图 5.3 系统主界面与功能导航图（此处放截图）
+
+功能 Tab 组织的核心代码如下：
+
+```tsx
+const TAB_DEFS: TabDef[] = [
+  {
+    id: WorkspaceTab.GENERATE,
+    label: "文生图",
+    icon: <Wand2 className="h-5 w-5" />,
+    visible: (ctx) => ctx.supportTxt2img || ctx.hasAnyTxt2imgModel,
+  },
+  {
+    id: WorkspaceTab.INPAINT,
+    label: "AI擦除",
+    icon: <Pencil className="h-5 w-5" />,
+    visible: () => true,
+  },
+  {
+    id: WorkspaceTab.OUTPAINT,
+    label: "AI扩图",
+    icon: <Expand className="h-5 w-5" />,
+    visible: (ctx) => ctx.hasAnyOutpaintingModel,
+  },
+  {
+    id: WorkspaceTab.AI_REPAINT,
+    label: "AI重绘",
+    icon: <Edit2 className="h-5 w-5" />,
+    visible: (ctx) => ctx.supportTxt2img || ctx.hasAnyTxt2imgModel,
+  },
+  {
+    id: WorkspaceTab.REMOVE_BG,
+    label: "去背景",
+    icon: <Scissors className="h-5 w-5" />,
+    visible: (ctx) => ctx.hasRemoveBG,
+  },
+  {
+    id: WorkspaceTab.SUPER_RES,
+    label: "超分辨率",
+    icon: <Zap className="h-5 w-5" />,
+    visible: (ctx) => ctx.hasRealESRGAN,
+  },
+  {
+    id: WorkspaceTab.FACE_RESTORE,
+    label: "修复人脸",
+    icon: <Smile className="h-5 w-5" />,
+    visible: (ctx) => ctx.hasGFPGAN || ctx.hasRestoreFormer,
+  },
+  {
+    id: WorkspaceTab.INTERACTIVE_SEG,
+    label: "智能选区",
+    icon: <MousePointer2 className="h-5 w-5" />,
+    visible: (ctx) => ctx.hasInteractiveSeg,
+  },
+  {
+    id: WorkspaceTab.MY_WORKSPACE,
+    label: "我的作品",
+    icon: <FolderOpen className="h-5 w-5" />,
+    visible: () => true,
+  },
+]
+```
+
+主内容区则根据当前选中的标签页渲染不同功能组件。编辑类功能采用全屏画布局，插件类功能采用上下滚动布局，工作区页采用左右分栏布局。这种布局方式既复用了通用框架，又保留了各类功能的交互差异。
+
+主内容区渲染的核心代码如下：
+
+```tsx
+const renderContent = () => {
+  switch (effectiveTab) {
+    case WorkspaceTab.GENERATE:
+      return (
+        <div className="absolute top-[60px] left-[64px] right-0 bottom-0 overflow-y-auto">
+          <DiffusionProgress />
+          <GenerateTab />
+        </div>
+      )
+    case WorkspaceTab.INPAINT:
+      return (
+        <div className="absolute top-0 left-[64px] right-0 bottom-0">
+          <InpaintTab />
+        </div>
+      )
+    case WorkspaceTab.OUTPAINT:
+      return (
+        <div className="absolute top-0 left-[64px] right-0 bottom-0">
+          <OutpaintTab />
+        </div>
+      )
+    ...
+    case WorkspaceTab.MY_WORKSPACE:
+      return (
+        <div className="absolute top-[60px] left-[64px] right-0 bottom-0 overflow-hidden">
+          <MyWorkspaceTab />
+        </div>
+      )
+  }
+}
+```
+
+在默认状态设置方面，系统把“文生图”设为用户登录后的默认入口，这一点也和当前产品流程完全一致。对应状态初始值如下：
+
+```tsx
+settings: createDefaultSettingsForTab(WorkspaceTab.GENERATE),
+settingsByFeature: createDefaultSettingsByFeature(),
+activeTab: WorkspaceTab.GENERATE,
+generatedImages: [],
+selectedGeneratedImageIndex: 0,
+pendingGeneratedHandoff: false,
+```
 
 ### 5.3.2 交互式画布与蒙版编辑实现
 
-编辑类功能依赖统一画布状态。`states.ts` 中的 `editorState` 保存了当前渲染结果、线段组、额外蒙版、临时蒙版以及撤销重做栈；`interactiveSegState` 则记录交互式分割的点击点和临时分割结果。前端在画布中绘制的内容最终会通过 `generateMask` 等工具函数转换为可提交给后端的蒙版图像。
+AI 擦除、AI 扩图、AI 重绘和智能选区都围绕同一个编辑画布工作。以 `InpaintTab` 为例，其本身并不直接实现绘制逻辑，而是组合 `Editor`、`SidePanel`、`InteractiveSeg` 和 `DiffusionProgress` 等子组件，从而形成完整的编辑工作台。这种实现方式说明，真正的图像编辑状态不是分散在页面中，而是统一托管在前端 store 和 `Editor` 画布组件里。
 
-这种设计的关键在于把“显示层”和“算法输入层”解耦。用户看到的是带有半透明覆盖的交互画布，而系统实际提交给后端的是统一格式的二值掩码图。由此，AI擦除、AI重绘和智能选区三类功能便可以围绕同一套画布状态进行协作。
+图 5.4 编辑类功能画布界面图（此处放截图）
+
+编辑页装配的核心代码如下：
+
+```tsx
+const InpaintTab = () => {
+  const file = useStore((state) => state.file)
+
+  return (
+    <>
+      <div className="flex gap-3 absolute top-[68px] left-[24px] items-center">
+        <Plugins />
+        <ImageSize />
+      </div>
+      <InteractiveSeg />
+      <DiffusionProgress />
+      <SidePanel />
+      {file ? <Editor file={file} /> : <></>}
+    </>
+  )
+}
+```
+
+`Editor` 组件内部通过双层 Canvas 和额外状态层叠的方式组织显示内容。底层图像区负责渲染原图或最新结果图，上层遮罩区负责渲染临时遮罩、历史遮罩、智能选区掩码以及当前笔画。由此，用户看到的是连续可交互的统一画布，而不是多个松散的图片组件。
+
+画布分层渲染的核心代码如下：
+
+```tsx
+const render = renders.length === 0 ? original : renders[renders.length - 1]
+imageContext.clearRect(0, 0, imageContext.canvas.width, imageContext.canvas.height)
+imageContext.drawImage(render, 0, 0, imageWidth, imageHeight)
+
+context.clearRect(0, 0, context.canvas.width, context.canvas.height)
+temporaryMasks.forEach((maskImage) => {
+  context.drawImage(maskImage, 0, 0, imageWidth, imageHeight)
+})
+extraMasks.forEach((maskImage) => {
+  context.drawImage(maskImage, 0, 0, imageWidth, imageHeight)
+})
+
+if (
+  interactiveSegState.isInteractiveSeg &&
+  interactiveSegState.tmpInteractiveSegMask
+) {
+  context.drawImage(
+    interactiveSegState.tmpInteractiveSegMask,
+    0,
+    0,
+    imageWidth,
+    imageHeight
+  )
+}
+drawLines(context, curLineGroup)
+```
+
+当前端真正执行 AI 擦除、AI 扩图或 AI 重绘时，`states.ts` 中的 `runInpainting` 会把当前画布笔画、额外遮罩和扩图参数转换为统一的蒙版图像，再根据当前标签页推导出实际任务类型。这意味着三个编辑类功能虽然页面文案不同，但底层仍共享同一套任务提交链路。
+
+编辑任务提交的核心代码如下：
+
+```tsx
+const inpaintTaskType =
+  activeTab === WorkspaceTab.AI_REPAINT
+    ? "repaint"
+    : activeTab === WorkspaceTab.OUTPAINT
+    ? "outpaint"
+    : "inpaint"
+
+const maskCanvas = generateMask(
+  imageWidth,
+  imageHeight,
+  [maskLineGroup],
+  maskImages,
+  BRUSH_COLOR
+)
+
+const res = await inpaint(
+  targetFile,
+  settings,
+  inpaintTaskType,
+  cropperState,
+  extenderState,
+  dataURItoBlob(maskCanvas.toDataURL()),
+  paintByExampleFile,
+  get().currentWorkspaceSessionId ?? undefined
+)
+```
 
 ### 5.3.3 功能联动与自动衔接实现
 
-系统前端的一个重点实现是跨功能结果自动衔接。`states.ts` 中维护了 `workingImage`、`generatedImages`、`pendingGeneratedHandoff` 以及 `removeBgState`、`superResState`、`faceRestoreState` 等状态对象，用于表达“当前工作图像”“文生图候选结果”以及各插件功能的输入输出结果。
+多功能图像工作台能否真正好用，很大程度上取决于不同功能之间能否无缝衔接。当前系统在 `states.ts` 中维护了 `workingImage`、`generatedImages`、`pendingGeneratedHandoff`、`removeBgState`、`superResState` 和 `faceRestoreState` 等状态，用于描述“当前工作图像”“文生图候选结果”“一次性衔接标记”以及各插件页自己的源图/结果图。
 
-在此基础上，系统实现了两类自动联动：
+图 5.5 跨功能自动衔接效果图（此处放截图）
 
-1. 编辑类功能之间共享当前工作图片，切换 AI擦除、AI扩图、AI重绘和智能选区时可以直接继承当前图像。
-2. 去背景、超分辨率、修复人脸与编辑类功能之间共享结果图，处理完成后可继续进入其他页面，无需再次上传。
+当用户切换标签页时，`setActiveTab` 会根据“前一个标签页”和“目标标签页”的组合关系决定是否执行图像同步。例如，插件页结果可以自动衔接回编辑页，编辑页结果可以衔接到插件页，而文生图结果只有在刚完成生成、且 `pendingGeneratedHandoff` 为真时，才允许自动衔接到其他七项功能。这正是前期多轮迭代中重点修复的逻辑之一。
 
-此外，文生图结果只在用户完成“生成”后执行一次性自动衔接，而不会在每次进入“文生图”Tab 时覆盖其他页面的当前工作进度，从而避免破坏已有编辑状态。
+跨功能衔接判断的核心代码如下：
+
+```tsx
+setActiveTab: (tab: WorkspaceTab) => {
+  const prevTab = get().activeTab
+  const canSyncFromGenerate =
+    prevTab === WorkspaceTab.GENERATE && get().pendingGeneratedHandoff
+  const shouldSyncToFeatureTab =
+    prevTab !== tab &&
+    FEATURE_RESULT_TABS.includes(tab) &&
+    (prevTab !== WorkspaceTab.GENERATE || canSyncFromGenerate)
+  const shouldSyncToEditorTab =
+    prevTab !== tab &&
+    EDITOR_TABS.includes(tab) &&
+    (FEATURE_RESULT_TABS.includes(prevTab) || canSyncFromGenerate)
+  const shouldSyncImageOnTabSwitch =
+    shouldSyncToFeatureTab || shouldSyncToEditorTab
+  ...
+  if (shouldSyncImageOnTabSwitch) {
+    resolveCurrentTabImage()
+      .then((sourceFile) => {
+        if (!sourceFile) {
+          return
+        }
+        return get().loadImageForTab(sourceFile, tab).then(() => {
+          if (canSyncFromGenerate) {
+            set((state) => {
+              state.pendingGeneratedHandoff = false
+            })
+          }
+        })
+      })
+      .catch(console.error)
+  }
+}
+```
+
+文生图结果的一次性衔接标记则在生成成功后设置。前端会把新图加入 `generatedImages`，同时把 `pendingGeneratedHandoff` 设为 `true`。之后只有第一次离开文生图进入其他功能页时才会消费该标记，避免每次进入文生图页面都覆盖当前工作现场。
+
+文生图衔接标记设置的核心代码如下：
+
+```tsx
+if (result) {
+  const response = await fetch(result.blob)
+  const blob = await response.blob()
+  const file = new File([blob], "generated.png", {
+    type: blob.type || "image/png",
+  })
+
+  set((state) => {
+    state.generatedImages.unshift({
+      url: result.blob,
+      seed: result.seed ?? "0",
+      file,
+    })
+    state.selectedGeneratedImageIndex = 0
+    state.pendingGeneratedHandoff = true
+    state.workspaceDirty = true
+  })
+  get().setWorkingImage(file)
+}
+```
 
 ### 5.3.4 工作区保存、恢复与无缝衔接实现
 
-为了使前端状态与后端工作区机制对齐，`states.ts` 中维护了 `currentWorkspaceSessionId`、`workspaceItems`、`workspaceDetail`、`workspaceDirty` 和 `isSavingWorkspace` 等字段。用户点击保存时，前端会将当前工作图像、生成结果、各功能页参数以及当前标签页一起封装为 `SaveWorkspaceRequest`，提交给后端创建新快照或更新既有会话。
+前端工作区实现的关键，不在于“把图片发给后端保存”这么简单，而在于把不同功能的结果、当前工作现场、功能参数和保存状态统一组织起来。为此，`states.ts` 中维护了 `currentWorkspaceSessionId`、`workspaceItems`、`workspaceDetail`、`workspaceDirty` 和 `isSavingWorkspace` 等字段，用于表达当前工作是否已经被保存、当前保存的是哪个工作区会话，以及前端工作区列表和详情的加载状态。
 
-恢复工作区时，前端调用 `/api/v1/workspaces/{session_id}/resume`，然后根据返回的快照、资源映射和功能状态重建本地 store。由于系统已经将“结果图”“当前工作图”“各功能状态”分开保存，因此恢复后不仅能看到最终图片，还能回到先前的编辑现场继续操作。
+图 5.6 我的作品与工作恢复界面图（此处放截图）
+
+在保存阶段，前端会根据当前功能页动态组装资源。例如，文生图页保存的是选中的生成结果；编辑类页保存的是当前画布结果、原图和可能存在的蒙版；去背景、超分辨率和修复人脸页保存的是源图和结果图。若当前保存的 `session_id` 已失效，前端还会自动退回到“创建新工作区会话”流程。
+
+前端保存工作区的核心代码如下：
+
+```tsx
+const buildSavePayload = (sessionId?: string | null) => ({
+  session_id: sessionId,
+  active_tab: activeTab,
+  settings_by_feature: state.settingsByFeature,
+  workspace_state: workspaceState,
+  assets,
+})
+
+let detail: WorkspaceDetail
+try {
+  detail = await saveWorkspaceApi(
+    buildSavePayload(state.currentWorkspaceSessionId)
+  )
+} catch (e: any) {
+  const missingSession =
+    axios.isAxiosError(e) &&
+    e.response?.status === 404 &&
+    state.currentWorkspaceSessionId
+  if (!missingSession) {
+    throw e
+  }
+
+  set((draft) => {
+    draft.currentWorkspaceSessionId = null
+    draft.workspaceDetail = null
+  })
+
+  detail = await saveWorkspaceApi(buildSavePayload(null))
+}
+```
+
+在恢复阶段，前端会根据快照里的 `asset_roles` 重新装配 `primary`、`source`、`result` 和 `mask` 资源，再按目标功能页恢复相应状态。例如，若目标页是文生图，则恢复 `generatedImages`；若目标页是去背景，则恢复去背景功能专属的 `sourceImage` 与 `resultImage`；若目标页是编辑类，则恢复原图、当前图和蒙版。
+
+前端恢复工作区的核心代码如下：
+
+```tsx
+resumeWorkspace: async (id: string) => {
+  const payload: WorkspaceResumePayload = await resumeWorkspaceApi(id)
+  const roleMap = payload.snapshot.asset_roles || {}
+  const loadAssetFile = async (assetId?: string) => {
+    if (!assetId) return null
+    const res = await fetch(getAssetFileUrl(assetId))
+    const blob = await res.blob()
+    const type = res.headers.get("Content-Type") || "image/png"
+    return new File([blob], `${assetId}.${type.split("/")[1] || "png"}`, {
+      type,
+    })
+  }
+  ...
+  if (targetTab === WorkspaceTab.GENERATE) {
+    const file = primaryFile ?? sourceFile
+    if (file) {
+      const imageRef = makeImageRef(file)
+      set((state) => {
+        state.generatedImages = [{ url: imageRef.url, seed: "", file }]
+        state.selectedGeneratedImageIndex = 0
+        state.pendingGeneratedHandoff = false
+        revokeImageRef(state.workingImage)
+        state.workingImage = castDraft(imageRef)
+        state.file = null
+      })
+    }
+  } else if (targetTab === WorkspaceTab.REMOVE_BG) {
+    if (sourceFile ?? primaryFile) {
+      get().setFeatureSourceImage(
+        WorkspaceTab.REMOVE_BG,
+        (sourceFile ?? primaryFile)!
+      )
+    }
+    if (resultFile) get().setFeatureResultImage(WorkspaceTab.REMOVE_BG, resultFile)
+  }
+  ...
+  get().setActiveTab(targetTab)
+  get().resetWorkspaceDirty()
+}
+```
+
+对应到“我的作品”页面，前端还提供了工作列表检索、详情预览、继续编辑和删除功能，形成了完整的工作区闭环。
+
+工作区页面操作的核心代码如下：
+
+```tsx
+const handleOpen = async (id: string) => {
+  try {
+    await resumeWorkspace(id)
+  } catch (e: any) {
+    toast({
+      variant: "destructive",
+      description: e.message ? e.message : e.toString(),
+    })
+  }
+}
+
+const handleDelete = async (id: string) => {
+  try {
+    await deleteWorkspaceItem(id)
+    if (selectedId === id) {
+      setSelectedId(null)
+    }
+  } catch (e: any) {
+    toast({
+      variant: "destructive",
+      description: e.message ? e.message : e.toString(),
+    })
+  }
+}
+```
+
+### 5.3.5 登录页与会话恢复实现
+
+由于系统强制要求用户注册并登录后使用，因此登录页本身也是前端实现中的重要组成部分。`AuthPage.tsx` 负责渲染登录/注册界面、采集用户名、邮箱和密码，并根据当前模式调用 `login` 或 `register`。登录成功后，前端会保存令牌并立刻拉取当前用户信息，从而在界面上建立完整的登录态。
+
+图 5.7 登录与注册界面图（此处放截图）
+
+登录页提交逻辑的核心代码如下：
+
+```tsx
+const handleSubmit = async (e: FormEvent) => {
+  e.preventDefault()
+  if (!username || !password) return
+  if (isRegistering && !email) return
+  setIsLoading(true)
+  try {
+    if (isRegistering) {
+      await register(username, email, password)
+      toast({ description: "注册成功，已自动登录！" })
+    } else {
+      await login(username, password)
+      toast({ description: "登录成功！" })
+    }
+  } catch (err: any) {
+    toast({
+      variant: "destructive",
+      description: err?.response?.data?.detail || err.message || "操作失败，请重试",
+    })
+  } finally {
+    setIsLoading(false)
+  }
+}
+```
+
+在状态仓库中，系统把登录、注册、退出和会话恢复也都统一收拢到了 `states.ts`。这样一来，应用启动时 `App.tsx` 只需要调用 `restoreSession()` 就能完成会话恢复，而不需要每个页面各自管理用户状态。
+
+登录态维护的核心代码如下：
+
+```tsx
+login: async (username: string, password: string) => {
+  const data = await authLogin(username, password)
+  setAuthToken(data.access_token)
+  const user = await authMe()
+  set((state) => {
+    state.token = data.access_token
+    state.user = user
+    state.isAuthenticated = true
+  })
+  await get().fetchWorkspaces()
+},
+
+register: async (username: string, email: string, password: string) => {
+  await authRegister(username, email, password)
+  await get().login(username, password)
+},
+
+restoreSession: async () => {
+  const token = get().token
+  if (!token) return
+  try {
+    setAuthToken(token)
+    const user = await authMe()
+    set((state) => {
+      state.user = user
+      state.isAuthenticated = true
+    })
+    await get().fetchWorkspaces()
+  } catch {
+    get().logout()
+  }
+}
+```
 
 ## 5.4 实时反馈与体验优化实现
 
 ### 5.4.1 实时进度推送与任务结束通知
 
-文生图与部分扩散编辑任务耗时较长，因此系统使用 Socket.IO 推送实时进度。服务端在扩散模型回调中发送 `diffusion_progress` 事件，在任务结束时发送 `diffusion_finish` 事件；前端接收这些事件后更新进度条、按钮状态和任务提示，从而避免用户在长时间推理过程中失去反馈。
+文生图和部分基于扩散模型的编辑任务具有明显的耗时特征，因此系统没有采用单纯的“提交请求后无反馈等待”模式，而是引入了基于 Socket.IO 的实时进度推送。服务端在扩散模型的回调函数中持续发送 `diffusion_progress` 事件，在任务结束或取消时发送 `diffusion_finish` 事件；前端则在 `DiffusionProgress.tsx` 中监听这些事件并实时刷新进度条。
 
-相较于单纯依赖轮询查询状态，这种实现能减少无效请求，并让前端以更低延迟获取模型执行进度。对于毕业设计中的交互体验而言，这一机制是系统可用性的重要保障。
+图 5.8 文生图实时进度提示图（此处放截图）
+
+服务端进度推送的核心代码如下：
+
+```python
+global_sio: socketio.AsyncServer = None
+global_api: "Api" = None
+
+def diffuser_callback(pipe, step: int, timestep: int, callback_kwargs: Dict = {}):
+    if global_api is not None and global_api.cancel_event.is_set():
+        raise TaskCancelledError("Task canceled by user")
+    asyncio.run(global_sio.emit("diffusion_progress", {"step": step}))
+    if global_api is not None and global_api.cancel_event.is_set():
+        raise TaskCancelledError("Task canceled by user")
+    return {}
+```
+
+前端进度订阅与展示的核心代码如下：
+
+```tsx
+React.useEffect(() => {
+  if (!shouldTrackProgress) {
+    socketRef.current?.disconnect()
+    socketRef.current = null
+    setIsConnected(false)
+    setStep(0)
+    return
+  }
+
+  const socket = io(API_ENDPOINT, {
+    transports: ["websocket"],
+  })
+  socketRef.current = socket
+
+  socket.on("connect", () => {
+    setIsConnected(true)
+  })
+
+  socket.on("diffusion_progress", (data) => {
+    if (data) {
+      setStep(data.step + 1)
+    }
+  })
+
+  socket.on("diffusion_finish", () => {
+    setStep(0)
+  })
+}, [shouldTrackProgress])
+```
+
+这种实现方式的价值主要体现在两个方面：一方面，用户可以及时感知扩散任务是否仍在执行；另一方面，系统还能够自然地把“停止任务”操作嵌入同一个状态面板中，使长时任务控制更加直观。
 
 ### 5.4.2 保存确认、异常提示与取消任务机制
 
-为了降低误操作带来的损失，系统对“生成新图”和“上传新图”两类操作增加了未保存工作确认逻辑。当用户当前存在未保存图片或工作进度时，前端会通过 `AlertDialog` 主动询问是否先保存，再继续新的操作。这样可以避免用户在跨功能切换或重新上传素材时丢失已有成果。
+为了降低误操作对用户工作进度造成的影响，系统对“上传新图片”和“文生图重新生成”两类高风险动作都增加了未保存确认逻辑。当用户当前存在可保存内容且 `workspaceDirty` 为真时，系统不会直接覆盖现场，而是先弹出确认框，询问是否需要先保存再继续。这个设计与系统的工作区机制是强绑定的，也与当前产品的真实交互完全一致。
 
-在异常处理方面，前端统一通过 Toast 提示接口失败、取消或参数异常；在任务控制方面，系统还支持取消当前生成任务，后端在接收到取消信号后会结束当前任务并返回相应状态码。通过这些补充机制，系统在真实使用中的稳定性和可控性得到了明显提升。
+图 5.9 保存确认与异常提示图（此处放截图）
+
+上传新图前的确认弹窗核心代码如下：
+
+```tsx
+<AlertDialog
+  open={showReplaceImageConfirm}
+  onOpenChange={(open) => {
+    if (!open) {
+      cancelReplaceImage()
+    }
+  }}
+>
+  <AlertDialogContent>
+    <AlertDialogHeader>
+      <AlertDialogTitle>检测到未保存的图片或工作进度</AlertDialogTitle>
+      <AlertDialogDescription>
+        是否先保存之前的图片和工作进度，再上传新的图片？
+      </AlertDialogDescription>
+    </AlertDialogHeader>
+    <AlertDialogFooter>
+      <AlertDialogCancel disabled={isSavingWorkspace}>
+        取消
+      </AlertDialogCancel>
+      <AlertDialogCancel
+        disabled={isSavingWorkspace}
+        onClick={() => {
+          void confirmReplaceImageWithoutSave()
+        }}
+      >
+        不保存直接上传
+      </AlertDialogCancel>
+      <AlertDialogAction
+        disabled={isSavingWorkspace}
+        onClick={(ev) => {
+          ev.preventDefault()
+          void confirmReplaceImageWithSave()
+        }}
+      >
+        {isSavingWorkspace ? "保存中…" : "保存后上传"}
+      </AlertDialogAction>
+    </AlertDialogFooter>
+  </AlertDialogContent>
+</AlertDialog>
+```
+
+而在任务控制方面，系统支持前端主动停止当前扩散任务。前端点击 `DiffusionProgress` 面板中的“停止”按钮后，会调用 `/api/v1/cancel-current-task`；服务端收到请求后会设置 `cancel_event`，后续推理回调检测到该标记时立即中断任务执行。
+
+取消任务的核心代码如下：
+
+```python
+def api_cancel_current_task(self):
+    with self.task_state_lock:
+        if self.current_task is None:
+            return {"cancel_requested": False, "task": None}
+        self.cancel_event.set()
+        task = self.current_task
+    logger.info(f"Cancel requested for current task: {task}")
+    return {"cancel_requested": True, "task": task}
+```
+
+```tsx
+<Button
+  size="sm"
+  variant="destructive"
+  className="h-7 px-2 text-xs gap-1"
+  disabled={isCancelingTask}
+  onClick={() => {
+    cancelCurrentTask()
+  }}
+>
+  <Square className="h-3 w-3" />
+  {isCancelingTask ? "停止中..." : "停止"}
+</Button>
+```
+
+在异常反馈方面，系统前端统一使用 Toast 组件提示请求失败、取消成功或参数不合法等情况，保证用户在各种异常场景下都能得到即时反馈，而不会出现“点击了按钮却不知道系统发生了什么”的情况。
+
+## 5.5 系统功能演示
+
+为了验证前述实现设计是否真正落地，本节结合当前系统实际界面，对登录、八大核心功能以及工作区功能进行演示说明。各小节均给出界面占位说明，并配套列出与该功能直接相关的核心代码。
+
+### 5.5.1 登录功能演示
+
+登录功能是用户进入系统后的第一步。用户在登录页输入用户名和密码后点击“登录”，前端会调用 `login` 动作，随后通过 `/api/v1/auth/login` 获取访问令牌，再调用 `/api/v1/auth/me` 恢复当前用户资料。若用户处于注册模式，则系统会先注册再自动登录。
+
+图 5.10 登录功能界面图（此处放截图）
+
+相关核心代码如下：
+
+```tsx
+const handleSubmit = async (e: FormEvent) => {
+  e.preventDefault()
+  if (!username || !password) return
+  if (isRegistering && !email) return
+  setIsLoading(true)
+  try {
+    if (isRegistering) {
+      await register(username, email, password)
+      toast({ description: "注册成功，已自动登录！" })
+    } else {
+      await login(username, password)
+      toast({ description: "登录成功！" })
+    }
+  } catch (err: any) {
+    toast({
+      variant: "destructive",
+      description: err?.response?.data?.detail || err.message || "操作失败，请重试",
+    })
+  } finally {
+    setIsLoading(false)
+  }
+}
+```
+
+### 5.5.2 文生图功能演示
+
+文生图功能允许用户输入提示词、反向提示词、分辨率、采样步数和随机种子后生成图像。系统还额外加入了未保存进度确认逻辑，当当前存在未保存图片或工作现场时，用户点击“生成”会先弹出确认对话框，避免直接覆盖既有工作。
+
+图 5.11 文生图功能界面图（此处放截图）
+
+相关核心代码如下：
+
+```tsx
+const handleGenerate = useCallback(() => {
+  if (isDisabled || !settings.prompt.trim()) {
+    return
+  }
+
+  if (hasSavableWorkspaceContent() && hasUnsavedWorkspaceChanges()) {
+    setShowGenerateConfirm(true)
+    return
+  }
+
+  runTxt2Img()
+}, [
+  hasSavableWorkspaceContent,
+  hasUnsavedWorkspaceChanges,
+  isDisabled,
+  settings.prompt,
+  runTxt2Img,
+])
+
+runTxt2Img: async () => {
+  const result = await txt2img({
+    prompt: settings.prompt,
+    negativePrompt: settings.negativePrompt,
+    modelName: selectedModel.name,
+    width: settings.txt2imgWidth,
+    height: settings.txt2imgHeight,
+    steps: settings.sdSteps,
+    guidanceScale: settings.sdGuidanceScale,
+    sampler: settings.sdSampler,
+    sessionId: currentWorkspaceSessionId ?? undefined,
+    seed: settings.seed,
+    seedFixed: settings.seedFixed,
+    enableLCMLora: settings.enableLCMLora,
+  })
+  ...
+}
+```
+
+### 5.5.3 AI 擦除功能演示
+
+AI 擦除功能面向局部内容移除场景。用户上传图片后，在画布中直接涂抹待擦除区域，然后点击运行按钮，系统会把当前蒙版与图像一起提交给 `/api/v1/inpaint`，并在服务端使用 LaMa 模型完成区域修复。
+
+图 5.12 AI 擦除功能界面图（此处放截图）
+
+相关核心代码如下：
+
+```tsx
+const inpaintTaskType =
+  activeTab === WorkspaceTab.AI_REPAINT
+    ? "repaint"
+    : activeTab === WorkspaceTab.OUTPAINT
+    ? "outpaint"
+    : "inpaint"
+
+const res = await inpaint(
+  targetFile,
+  settings,
+  inpaintTaskType,
+  cropperState,
+  extenderState,
+  dataURItoBlob(maskCanvas.toDataURL()),
+  paintByExampleFile,
+  get().currentWorkspaceSessionId ?? undefined
+)
+```
+
+### 5.5.4 AI 扩图功能演示
+
+AI 扩图功能用于在原图四周自动扩展画面内容。用户进入 AI 扩图页后，系统会自动开启扩图器并切换到专用扩图模型；随后用户可以拖拽扩图边界并点击运行，让系统根据扩图区域生成新的外延内容。
+
+图 5.13 AI 扩图功能界面图（此处放截图）
+
+相关核心代码如下：
+
+```tsx
+useEffect(() => {
+  updateSettings({ showExtender: true }, { markDirty: false })
+  updateExtenderDirection(ExtenderDirection.xy, { markDirty: false })
+  const outpaintModel = serverConfig.modelInfos.find(
+    (m) => m.name === OUTPAINT_MODEL
+  )
+  if (outpaintModel && outpaintModel.name !== settings.model.name) {
+    updateSettings({ model: outpaintModel }, { markDirty: false })
+  }
+}, [])
+```
+
+### 5.5.5 AI 重绘功能演示
+
+AI 重绘功能用于在指定遮罩区域内重新生成内容。与 AI 擦除不同，AI 重绘要求用户在画布上涂抹目标区域后，再输入新的提示词，系统随后会按照提示词语义重新绘制遮罩区域内容。
+
+图 5.14 AI 重绘功能界面图（此处放截图）
+
+相关核心代码如下：
+
+```tsx
+<Textarea
+  value={settings.prompt}
+  placeholder="例如：a wooden table with a vase of white flowers, realistic lighting"
+  className="min-h-[64px] resize-none"
+  onInput={(e) => {
+    updateSettings({
+      prompt: (e.target as HTMLTextAreaElement).value,
+    })
+  }}
+/>
+<Button
+  className="h-[64px] min-w-[88px]"
+  disabled={isProcessing || !file || !settings.prompt.trim()}
+  onClick={runInpainting}
+>
+  运行
+</Button>
+```
+
+### 5.5.6 去背景功能演示
+
+去背景功能主要面向商品抠图、人物抠图等场景。用户上传图片后，可以在下拉框中选择当前去背景模型，点击“AI 去背景”后系统会通过统一插件接口调用 RemoveBG 插件，返回带透明通道的结果图。
+
+图 5.15 去背景功能界面图（此处放截图）
+
+相关核心代码如下：
+
+```tsx
+const handleRemoveBG = async () => {
+  if (!sourceImage) return
+  setIsProcessing(true)
+  try {
+    await switchPluginModel(PluginName.RemoveBG, selectedModel)
+    const res = await runPlugin(
+      false,
+      PluginName.RemoveBG,
+      sourceImage.file,
+      undefined,
+      undefined,
+      currentWorkspaceSessionId ?? undefined
+    )
+    const blob = await fetch(res.blob).then((r) => r.blob())
+    const file = new File([blob], "removed_bg.png", { type: blob.type || "image/png" })
+    setFeatureResultImage(WorkspaceTab.REMOVE_BG, file)
+  } catch (e: any) {
+    toast({
+      variant: "destructive",
+      description: e.message ? e.message : e.toString(),
+    })
+  } finally {
+    setIsProcessing(false)
+  }
+}
+```
+
+### 5.5.7 超分辨率功能演示
+
+超分辨率功能面向低清图片放大场景。用户上传图片后，系统会调用 RealESRGAN 插件对图像执行 4 倍放大，并在页面右侧显示放大结果。同时，该页面也支持结果撤销、重做和下载。
+
+图 5.16 超分辨率功能界面图（此处放截图）
+
+相关核心代码如下：
+
+```tsx
+const handleUpscale = async () => {
+  if (!sourceImage) return
+  setIsProcessing(true)
+  try {
+    await switchPluginModel(PluginName.RealESRGAN, selectedModel)
+    const res = await runPlugin(
+      false,
+      PluginName.RealESRGAN,
+      sourceImage.file,
+      4,
+      undefined,
+      currentWorkspaceSessionId ?? undefined
+    )
+    const blob = await fetch(res.blob).then((r) => r.blob())
+    const file = new File([blob], "upscaled.png", { type: blob.type || "image/png" })
+    setFeatureResultImage(WorkspaceTab.SUPER_RES, file)
+  } catch (e: any) {
+    toast({
+      variant: "destructive",
+      description: e.message ? e.message : e.toString(),
+    })
+  } finally {
+    setIsProcessing(false)
+  }
+}
+```
+
+### 5.5.8 修复人脸功能演示
+
+修复人脸功能用于恢复模糊、低清或受损的人脸细节。若服务端同时启用了 GFPGAN 和 RestoreFormer，前端会同时展示两个按钮供用户切换；若只启用了其中一个，则只显示对应能力。用户点击后系统会调用对应插件，并把结果保存到人脸修复状态中。
+
+图 5.17 修复人脸功能界面图（此处放截图）
+
+相关核心代码如下：
+
+```tsx
+const handleRestore = async (pluginName: string) => {
+  if (!sourceImage) return
+  setIsProcessing(true)
+  try {
+    const res = await runPlugin(
+      false,
+      pluginName,
+      sourceImage.file,
+      undefined,
+      undefined,
+      currentWorkspaceSessionId ?? undefined
+    )
+    const blob = await fetch(res.blob).then((r) => r.blob())
+    const file = new File([blob], "face_restored.png", { type: blob.type || "image/png" })
+    setFeatureSelectedModel(WorkspaceTab.FACE_RESTORE, pluginName)
+    setFeatureResultImage(WorkspaceTab.FACE_RESTORE, file)
+  } catch (e: any) {
+    toast({
+      variant: "destructive",
+      description: e.message ? e.message : e.toString(),
+    })
+  } finally {
+    setIsProcessing(false)
+  }
+}
+```
+
+### 5.5.9 智能选区功能演示
+
+智能选区功能用于快速生成前景掩码。用户进入智能选区页面后，可以使用左键添加前景点、右键添加背景点，系统会在每次点击后立即调用智能分割插件并刷新临时掩码。用户确认无误后点击 Accept，即可把该掩码无缝衔接到 AI 擦除或 AI 重绘等编辑功能中。
+
+图 5.18 智能选区功能界面图（此处放截图）
+
+相关核心代码如下：
+
+```tsx
+useEffect(() => {
+  updateInteractiveSegState({ isInteractiveSeg: true })
+  return () => {
+    resetInteractiveSegState()
+  }
+}, [file, updateInteractiveSegState, resetInteractiveSegState])
+
+<div className="z-10 absolute top-[112px] rounded-xl border-solid border px-3 py-1.5 left-1/2 translate-x-[-50%] text-xs text-muted-foreground bg-background/90 pointer-events-none">
+  左键添加前景点，右键添加背景点；每次点击会实时更新，完成后点上方 Accept 应用遮罩
+</div>
+```
+
+### 5.5.10 工作区功能演示
+
+工作区功能用于保存、管理和恢复用户的创作过程。用户可以在任意功能页点击保存，把当前图像、功能参数和工作状态写入“我的作品”；之后在工作区页中可以按标题搜索工作、查看预览、继续编辑或删除记录，也可以直接上传图片创建新的工作会话。
+
+图 5.19 工作区功能界面图（此处放截图）
+
+相关核心代码如下：
+
+```tsx
+useEffect(() => {
+  fetchWorkspaces()
+}, [fetchWorkspaces])
+
+const handleOpen = async (id: string) => {
+  try {
+    await resumeWorkspace(id)
+  } catch (e: any) {
+    toast({
+      variant: "destructive",
+      description: e.message ? e.message : e.toString(),
+    })
+  }
+}
+
+<ImageUploadButton
+  tooltip="上传图片并创建工作"
+  onFileUpload={(file) => void importFileToWorkspace(file)}
+>
+  <Upload className="h-4 w-4 mr-2" />
+  上传新图片
+</ImageUploadButton>
+
+<Button onClick={() => handleOpen(workspaceDetail.session.id)} className="gap-2">
+  <Play className="h-4 w-4" />
+  继续编辑
+</Button>
+```
 
 # **第6章 系统测试**
 
