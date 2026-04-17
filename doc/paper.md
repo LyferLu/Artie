@@ -389,56 +389,58 @@ AI重绘功能：支持用户基于局部提示词对选定区域进行重新生
 
 ### 3.2.4 业务建模
 
-从用户视角看，系统中的核心参与者是注册登录用户。用户既可以发起文生图任务，也可以上传已有图像进入编辑流程；在任意处理阶段产生的结果，用户都可以继续发送到其他功能模块，并最终保存为工作区记录。系统的业务建模如图 3.1 所示。
+从用户视角看，系统中的参与者主要分为访客和登录用户两类。访客可通过注册与登录进入系统；登录用户进入系统后，既可以发起文生图任务，也可以上传已有图像进入编辑流程，并在后续处理中使用 AI擦除、AI扩图、AI重绘、去背景、超分辨率、修复人脸和智能选区等功能，还可以对当前创作结果进行工作区保存、恢复、删除和下载。系统的业务建模如图 3.1 所示。
 
-```mermaid
-flowchart LR
-    U[用户]
-    A[注册/登录]
-    B[文生图]
-    C[AI擦除]
-    D[AI扩图]
-    E[AI重绘]
-    F[去背景]
-    G[超分辨率]
-    H[修复人脸]
-    I[智能选区]
-    J[保存工作区]
-    K[恢复工作区]
-    L[下载结果]
-    P[上传图片]
+```plantuml
+@startuml
+left to right direction
+skinparam shadowing false
+skinparam packageStyle rectangle
 
-    U --> A
-    U --> B
-    U --> C
-    U --> D
-    U --> E
-    U --> F
-    U --> G
-    U --> H
-    U --> I
-    U --> J
-    U --> K
-    U --> L
-    U --> P
+actor "访客" as Guest
 
-    B --> C
-    B --> D
-    B --> E
-    B --> F
-    B --> G
-    B --> H
-    B --> I
-    C --> J
-    D --> J
-    E --> J
-    F --> J
-    G --> J
-    H --> J
-    I --> J
+rectangle "AI文生图与图像智能编辑系统" {
+  usecase "注册" as UC_Register
+  usecase "登录" as UC_Login
+  usecase "上传图片" as UC_Upload
+  usecase "文生图" as UC_Generate
+  usecase "AI擦除" as UC_Inpaint
+  usecase "AI扩图" as UC_Outpaint
+  usecase "AI重绘" as UC_Repaint
+  usecase "去背景" as UC_RemoveBG
+  usecase "超分辨率" as UC_SuperRes
+  usecase "修复人脸" as UC_FaceRestore
+  usecase "智能选区" as UC_InteractiveSeg
+  usecase "保存工作区" as UC_SaveWorkspace
+  usecase "恢复工作区" as UC_ResumeWorkspace
+  usecase "删除工作区" as UC_DeleteWorkspace
+  usecase "下载结果" as UC_Download
+
+
+}
+
+actor "登录用户" as User
+
+Guest -up-> UC_Register
+Guest -up-> UC_Login
+
+User --> UC_Upload
+User --> UC_Generate
+User --> UC_Inpaint
+User --> UC_Outpaint
+User --> UC_Repaint
+User --> UC_RemoveBG
+User --> UC_SuperRes
+User --> UC_FaceRestore
+User --> UC_InteractiveSeg
+User --> UC_SaveWorkspace
+User --> UC_ResumeWorkspace
+User --> UC_DeleteWorkspace
+User --> UC_Download
+@enduml
 ```
 
-图 3.1 文生图与图像智能编辑系统用例图（Mermaid 草稿）
+图 3.1 文生图与图像智能编辑系统用例图
 
 ## 3.3 用例规约
 
