@@ -2537,7 +2537,7 @@ def api_txt2img(
 
 `ModelCache` 的核心职责包括缓存读取、缓存写入、按容量和显存上限淘汰旧模型，以及记录各模型的显存占用估计值。其实现并非简单地按模型名称缓存，而是通过缓存键把模型名称与变体信息一起编码，因而能够兼容 ControlNet、BrushNet 等扩展场景。
 
-模型缓存的核心代码如下：
+模型缓存的核心代码节选如下：
 
 ```python
 class ModelCache:
@@ -2556,7 +2556,6 @@ class ModelCache:
     def get(self, key: str):
         if key in self._cache:
             self._cache.move_to_end(key)
-            logger.info(f"ModelCache hit: {key}")
             return self._cache[key]
         return None
 
@@ -2570,10 +2569,6 @@ class ModelCache:
         self._evict_if_needed(vram_gb)
         self._cache[key] = model
         self._model_vram_gb[key] = vram_gb
-        logger.info(
-            f"ModelCache stored: {key} ({vram_gb:.2f} GB). "
-            f"Cache size: {len(self._cache)}/{self.max_models}"
-        )
 
     def _evict_if_needed(self, needed_gb: float):
         while self._cache and (
@@ -2581,13 +2576,10 @@ class ModelCache:
             or self._current_allocated_gb() + needed_gb > self.max_vram_gb
         ):
             evicted_key, evicted_model = self._cache.popitem(last=False)
-            evicted_vram = self._model_vram_gb.pop(evicted_key, 0.0)
+            self._model_vram_gb.pop(evicted_key, 0.0)
             del evicted_model
             gc.collect()
             torch_gc()
-            logger.info(
-                f"ModelCache evicted LRU: {evicted_key} ({evicted_vram:.2f} GB freed)"
-            )
 ```
 
 在接口执行过程中，模型切换是按任务类型动态触发的。文生图接口会根据 `req.model_name` 决定是否切换模型；编辑接口则会根据任务类型把 AI 擦除映射到 `lama`，把 AI 扩图和 AI 重绘映射到重绘模型。这样的设计保证了前端只需要表达“我要做什么”，而具体使用哪一个底层模型由后端统一决定。
@@ -2620,7 +2612,7 @@ if target_model != self.model_manager.name:
 
 插件调用的第一层统一入口在 `api_run_plugin_gen_image` 和 `api_run_plugin_gen_mask` 中。这两个接口负责检查插件是否存在、是否支持当前输出类型、解码前端上传的图像，并在插件执行完成后把结果重新封装为前端可直接显示的 PNG 数据。
 
-插件统一调度的核心代码如下：
+插件统一调度的核心代码节选如下：
 
 ```python
 def api_run_plugin_gen_image(
@@ -2631,31 +2623,18 @@ def api_run_plugin_gen_image(
 ):
     if req.name not in self.plugins:
         raise HTTPException(status_code=422, detail="Plugin not found")
-    if not self.plugins[req.name].support_gen_image:
+    plugin = self.plugins[req.name]
+    if not plugin.support_gen_image:
         raise HTTPException(status_code=422, detail="Plugin does not support output image")
-    start = time.time()
     rgb_np_img, alpha_channel, infos, _ = decode_base64_to_image(req.image)
-    bgr_or_rgba_np_img = self.plugins[req.name].gen_image(rgb_np_img, req)
+    bgr_or_rgba_np_img = plugin.gen_image(rgb_np_img, req)
     torch_gc()
     if bgr_or_rgba_np_img.shape[2] == 4:
         rgba_np_img = bgr_or_rgba_np_img
     else:
         rgba_np_img = cv2.cvtColor(bgr_or_rgba_np_img, cv2.COLOR_BGR2RGB)
         rgba_np_img = concat_alpha_channel(rgba_np_img, alpha_channel)
-
-    duration_ms = int((time.time() - start) * 1000)
-    self._create_operation_log(
-        db=db,
-        user=current_user,
-        session_id=req.session_id,
-        feature=req.name,
-        operation="plugin_image",
-        model_name=None,
-        plugin_name=req.name,
-        duration_ms=duration_ms,
-        request_data=self._safe_json(req),
-        response_data={"width": rgba_np_img.shape[1], "height": rgba_np_img.shape[0]},
-    )
+    # 省略操作日志写入逻辑
     return Response(
         content=pil_to_bytes(Image.fromarray(rgba_np_img), ext="png", quality=self.config.quality, infos=infos),
         media_type="image/png",
@@ -2669,16 +2648,17 @@ def api_run_plugin_gen_mask(
 ):
     if req.name not in self.plugins:
         raise HTTPException(status_code=422, detail="Plugin not found")
-    if not self.plugins[req.name].support_gen_mask:
+    plugin = self.plugins[req.name]
+    if not plugin.support_gen_mask:
         raise HTTPException(status_code=422, detail="Plugin does not support output image")
     rgb_np_img, _, _, _ = decode_base64_to_image(req.image)
-    bgr_or_gray_mask = self.plugins[req.name].gen_mask(rgb_np_img, req)
+    bgr_or_gray_mask = plugin.gen_mask(rgb_np_img, req)
     return Response(content=numpy_to_bytes(gen_frontend_mask(bgr_or_gray_mask), "png"), media_type="image/png")
 ```
 
 在插件内部，不同能力又各自保留了独立的模型初始化和推理逻辑。例如，RemoveBG 会根据选择的模型决定使用 Bria RMBG 还是 rembg 的会话；InteractiveSeg 会读取前端点击点集合并即时返回分割掩码。这种结构使得插件既保留了通用接入方式，又不会损失算法自身的独立性。
 
-去背景与智能选区插件的核心代码如下：
+去背景与智能选区插件的核心代码节选如下：
 
 ```python
 class RemoveBG(BasePlugin):
@@ -2692,9 +2672,8 @@ class RemoveBG(BasePlugin):
             self.session = create_briarmbg_session(local_files_only=self.local_files_only).to(self.device)
             self.remove = briarmbg_process
         elif model_name == RemoveBGModel.briaai_rmbg_2_0:
-            from artie.plugins.briarmbg2 import create_briarmbg2_session, briarmbg2_process
-            self.session = create_briarmbg2_session(local_files_only=self.local_files_only).to(self.device)
-            self.remove = briarmbg2_process
+            # 省略 RMBG 2.0 初始化逻辑，结构与 1.4 分支一致
+            ...
         else:
             from rembg import new_session
             self.session = new_session(model_name=model_name)
@@ -2716,24 +2695,17 @@ class InteractiveSeg(BasePlugin):
 
     @torch.inference_mode()
     def forward(self, rgb_np_img, clicks: List[List], img_md5: str):
-        input_point = []
-        input_label = []
-        for click in clicks:
-            x = float(click[0])
-            y = float(click[1])
-            input_point.append([x, y])
-            input_label.append(int(round(click[2])))
+        input_point = [[float(click[0]), float(click[1])] for click in clicks]
+        input_label = [int(round(click[2])) for click in clicks]
         if img_md5 and img_md5 != self.prev_img_md5:
             self.prev_img_md5 = img_md5
             self.predictor.set_image(rgb_np_img)
-
         masks, _, _ = self.predictor.predict(
             point_coords=np.array(input_point),
             point_labels=np.array(input_label),
             multimask_output=False,
         )
-        mask = masks[0].astype(np.uint8) * 255
-        return mask
+        return masks[0].astype(np.uint8) * 255
 ```
 
 超分辨率与修复人脸也采用同样的插件组织方式。前者通过 `RealESRGANUpscaler` 对输入图像进行 4 倍放大，后者则通过 `GFPGANPlugin` 或 `RestoreFormerPlugin` 完成人脸细节恢复。这样一来，四类非扩散能力都可以在同一框架下被管理、切换和记录。
@@ -2769,7 +2741,7 @@ class GFPGANPlugin(BasePlugin):
 
 工作区是本系统区别于普通单次图像处理工具的重要实现点。系统不仅保存最终图片，还同时保存当前功能页、各功能参数、蒙版、预览图以及会话操作记录。当前端点击“保存到我的作品”时，会将当前状态封装为 `SaveWorkspaceRequest` 并提交给 `/api/v1/workspaces/save`，服务端随后创建或更新工作区会话、写入资源、生成快照并更新当前快照指针。
 
-工作区保存的服务端核心代码如下：
+工作区保存的服务端核心代码节选如下：
 
 ```python
 def api_save_workspace(
@@ -2781,38 +2753,28 @@ def api_save_workspace(
     session = self._require_workspace_session(db, current_user, req.session_id)
     if session is None:
         session = db_crud.create_workspace_session(
-            db=db,
-            user_id=current_user.id,
+            db=db, user_id=current_user.id,
             title=self._workspace_title(req.active_tab, req.title),
-            source_feature=req.active_tab,
-            current_feature=req.active_tab,
+            source_feature=req.active_tab, current_feature=req.active_tab,
         )
     else:
         db_crud.touch_workspace_session(
-            db,
-            session,
-            title=self._workspace_title(req.active_tab, req.title),
-            current_feature=req.active_tab,
+            db, session,
+            title=self._workspace_title(req.active_tab, req.title), current_feature=req.active_tab,
         )
-
     asset_roles: dict[str, str] = {}
     for asset in req.assets:
         created = self._create_asset_from_upload(
-            db=db,
-            user=current_user,
-            session_id=session.id,
-            active_tab=req.active_tab,
-            role=asset.role,
-            kind=asset.kind,
-            data_url=asset.data,
-            filename=asset.filename,
-            label=asset.label,
-            width=asset.width,
-            height=asset.height,
-            mime_type=asset.mime_type,
-            metadata=asset.metadata,
+            db=db, user=current_user, session_id=session.id,
+            active_tab=req.active_tab, role=asset.role,
+            kind=asset.kind, data_url=asset.data,
+            # 省略文件名、尺寸与元数据等参数
         )
         asset_roles[asset.role] = created.id
+
+    primary_asset_id = asset_roles.get("primary") or asset_roles.get("result") or asset_roles.get("source")
+    mask_asset_id = asset_roles.get("mask")
+    preview_asset_id = asset_roles.get("preview") or primary_asset_id
 
     snapshot = db_crud.create_snapshot(
         db=db,
@@ -2827,6 +2789,14 @@ def api_save_workspace(
         workspace_state=req.workspace_state,
     )
     db_crud.upsert_feature_states(db, session.id, req.settings_by_feature)
+    db_crud.touch_workspace_session(
+        db, session,
+        current_snapshot_id=snapshot.id,
+        current_asset_id=primary_asset_id,
+        current_mask_asset_id=mask_asset_id,
+        current_preview_asset_id=preview_asset_id,
+    )
+    # 省略操作日志、活动记录与响应封装逻辑
 ```
 
 除了保存，系统还支持直接上传图片创建新工作区。前端在“我的作品”页点击“上传新图片”时，会调用 `/api/v1/workspaces/import`，服务端会立即创建一个新的工作区会话，并把上传图片同时记录为 `primary`、`source` 和 `preview` 资产，从而使该图片能够立刻被恢复到编辑场景中。
@@ -3008,7 +2978,7 @@ def api_get_asset_file(self, asset_id: str, request: Request, db: Session = Depe
 
 图 5.3 系统主界面与功能导航图（此处放截图）
 
-功能 Tab 组织的核心代码如下：
+功能 Tab 组织的核心代码节选如下：
 
 ```tsx
 const TAB_DEFS: TabDef[] = [
@@ -3025,41 +2995,12 @@ const TAB_DEFS: TabDef[] = [
     visible: () => true,
   },
   {
-    id: WorkspaceTab.OUTPAINT,
-    label: "AI扩图",
-    icon: <Expand className="h-5 w-5" />,
-    visible: (ctx) => ctx.hasAnyOutpaintingModel,
-  },
-  {
-    id: WorkspaceTab.AI_REPAINT,
-    label: "AI重绘",
-    icon: <Edit2 className="h-5 w-5" />,
-    visible: (ctx) => ctx.supportTxt2img || ctx.hasAnyTxt2imgModel,
-  },
-  {
     id: WorkspaceTab.REMOVE_BG,
     label: "去背景",
     icon: <Scissors className="h-5 w-5" />,
     visible: (ctx) => ctx.hasRemoveBG,
   },
-  {
-    id: WorkspaceTab.SUPER_RES,
-    label: "超分辨率",
-    icon: <Zap className="h-5 w-5" />,
-    visible: (ctx) => ctx.hasRealESRGAN,
-  },
-  {
-    id: WorkspaceTab.FACE_RESTORE,
-    label: "修复人脸",
-    icon: <Smile className="h-5 w-5" />,
-    visible: (ctx) => ctx.hasGFPGAN || ctx.hasRestoreFormer,
-  },
-  {
-    id: WorkspaceTab.INTERACTIVE_SEG,
-    label: "智能选区",
-    icon: <MousePointer2 className="h-5 w-5" />,
-    visible: (ctx) => ctx.hasInteractiveSeg,
-  },
+  // 省略 AI扩图、AI重绘、超分辨率、修复人脸与智能选区等定义
   {
     id: WorkspaceTab.MY_WORKSPACE,
     label: "我的作品",
@@ -3071,7 +3012,7 @@ const TAB_DEFS: TabDef[] = [
 
 主内容区则根据当前选中的标签页渲染不同功能组件。编辑类功能采用全屏画布局，插件类功能采用上下滚动布局，工作区页采用左右分栏布局。这种布局方式既复用了通用框架，又保留了各类功能的交互差异。
 
-主内容区渲染的核心代码如下：
+主内容区渲染的核心代码节选如下：
 
 ```tsx
 const renderContent = () => {
@@ -3089,42 +3030,13 @@ const renderContent = () => {
           <InpaintTab />
         </div>
       )
-    case WorkspaceTab.OUTPAINT:
-      return (
-        <div className="absolute top-0 left-[64px] right-0 bottom-0">
-          <OutpaintTab />
-        </div>
-      )
-    case WorkspaceTab.AI_REPAINT:
-      return (
-        <div className="absolute top-0 left-[64px] right-0 bottom-0">
-          <AIRepaintTab />
-        </div>
-      )
     case WorkspaceTab.REMOVE_BG:
       return (
         <div className="absolute top-[60px] left-[64px] right-0 bottom-0 overflow-y-auto">
           <RemoveBGTab />
         </div>
       )
-    case WorkspaceTab.SUPER_RES:
-      return (
-        <div className="absolute top-[60px] left-[64px] right-0 bottom-0 overflow-y-auto">
-          <SuperResTab />
-        </div>
-      )
-    case WorkspaceTab.FACE_RESTORE:
-      return (
-        <div className="absolute top-[60px] left-[64px] right-0 bottom-0 overflow-y-auto">
-          <FaceRestoreTab />
-        </div>
-      )
-    case WorkspaceTab.INTERACTIVE_SEG:
-      return (
-        <div className="absolute top-0 left-[64px] right-0 bottom-0">
-          <InteractiveSegTab />
-        </div>
-      )
+    // 省略 AI扩图、AI重绘、超分辨率、修复人脸与智能选区等分支
     case WorkspaceTab.MY_WORKSPACE:
       return (
         <div className="absolute top-[60px] left-[64px] right-0 bottom-0 overflow-hidden">
@@ -3245,13 +3157,12 @@ const res = await inpaint(
 
 当用户切换标签页时，`setActiveTab` 会根据“前一个标签页”和“目标标签页”的组合关系决定是否执行图像同步。例如，插件页结果可以自动衔接回编辑页，编辑页结果可以衔接到插件页，而文生图结果只有在刚完成生成、且 `pendingGeneratedHandoff` 为真时，才允许自动衔接到其他七项功能。这正是前期多轮迭代中重点修复的逻辑之一。
 
-跨功能衔接判断的核心代码如下：
+跨功能衔接判断的核心代码节选如下：
 
 ```tsx
 setActiveTab: (tab: WorkspaceTab) => {
   const prevTab = get().activeTab
-  const canSyncFromGenerate =
-    prevTab === WorkspaceTab.GENERATE && get().pendingGeneratedHandoff
+  const canSyncFromGenerate = prevTab === WorkspaceTab.GENERATE && get().pendingGeneratedHandoff
   const shouldSyncToFeatureTab =
     prevTab !== tab &&
     FEATURE_RESULT_TABS.includes(tab) &&
@@ -3260,14 +3171,13 @@ setActiveTab: (tab: WorkspaceTab) => {
     prevTab !== tab &&
     EDITOR_TABS.includes(tab) &&
     (FEATURE_RESULT_TABS.includes(prevTab) || canSyncFromGenerate)
-  const shouldSyncImageOnTabSwitch =
-    shouldSyncToFeatureTab || shouldSyncToEditorTab
+  if (!(shouldSyncToFeatureTab || shouldSyncToEditorTab)) {
+    return
+  }
 
   const resolveCurrentTabImage = async (): Promise<File | null> => {
     if (prevTab === WorkspaceTab.GENERATE) {
-      const selected =
-        get().generatedImages[get().selectedGeneratedImageIndex] ??
-        get().generatedImages[0]
+      const selected = get().generatedImages[get().selectedGeneratedImageIndex] ?? get().generatedImages[0]
       if (!selected) {
         return get().workingImage?.file ?? null
       }
@@ -3283,22 +3193,20 @@ setActiveTab: (tab: WorkspaceTab) => {
     return get().workingImage?.file ?? get().file ?? null
   }
 
-  if (shouldSyncImageOnTabSwitch) {
-    resolveCurrentTabImage()
-      .then((sourceFile) => {
-        if (!sourceFile) {
-          return
+  resolveCurrentTabImage()
+    .then((sourceFile) => {
+      if (!sourceFile) {
+        return
+      }
+      return get().loadImageForTab(sourceFile, tab).then(() => {
+        if (canSyncFromGenerate) {
+          set((state) => {
+            state.pendingGeneratedHandoff = false
+          })
         }
-        return get().loadImageForTab(sourceFile, tab).then(() => {
-          if (canSyncFromGenerate) {
-            set((state) => {
-              state.pendingGeneratedHandoff = false
-            })
-          }
-        })
       })
-      .catch(console.error)
-  }
+    })
+    .catch(console.error)
 }
 ```
 
@@ -3372,7 +3280,7 @@ try {
 
 在恢复阶段，前端会根据快照里的 `asset_roles` 重新装配 `primary`、`source`、`result` 和 `mask` 资源，再按目标功能页恢复相应状态。例如，若目标页是文生图，则恢复 `generatedImages`；若目标页是去背景，则恢复去背景功能专属的 `sourceImage` 与 `resultImage`；若目标页是编辑类，则恢复原图、当前图和蒙版。
 
-前端恢复工作区的核心代码如下：
+前端恢复工作区的核心代码节选如下：
 
 ```tsx
 resumeWorkspace: async (id: string) => {
@@ -3383,9 +3291,7 @@ resumeWorkspace: async (id: string) => {
     const res = await fetch(getAssetFileUrl(assetId))
     const blob = await res.blob()
     const type = res.headers.get("Content-Type") || "image/png"
-    return new File([blob], `${assetId}.${type.split("/")[1] || "png"}`, {
-      type,
-    })
+    return new File([blob], `${assetId}.${type.split("/")[1] || "png"}`, { type })
   }
   const primaryFile = await loadAssetFile(roleMap.primary)
   const sourceFile = await loadAssetFile(roleMap.source)
@@ -3401,35 +3307,15 @@ resumeWorkspace: async (id: string) => {
         state.generatedImages = [{ url: imageRef.url, seed: "", file }]
         state.selectedGeneratedImageIndex = 0
         state.pendingGeneratedHandoff = false
-        revokeImageRef(state.workingImage)
+        // 省略旧 workingImage 的 URL 回收逻辑
         state.workingImage = castDraft(imageRef)
         state.file = null
       })
     }
   } else if (targetTab === WorkspaceTab.REMOVE_BG) {
-    if (sourceFile ?? primaryFile) {
-      get().setFeatureSourceImage(
-        WorkspaceTab.REMOVE_BG,
-        (sourceFile ?? primaryFile)!
-      )
-    }
+    if (sourceFile ?? primaryFile) get().setFeatureSourceImage(WorkspaceTab.REMOVE_BG, (sourceFile ?? primaryFile)!)
     if (resultFile) get().setFeatureResultImage(WorkspaceTab.REMOVE_BG, resultFile)
-  } else if (targetTab === WorkspaceTab.SUPER_RES) {
-    if (sourceFile ?? primaryFile) {
-      get().setFeatureSourceImage(
-        WorkspaceTab.SUPER_RES,
-        (sourceFile ?? primaryFile)!
-      )
-    }
-    if (resultFile) get().setFeatureResultImage(WorkspaceTab.SUPER_RES, resultFile)
-  } else if (targetTab === WorkspaceTab.FACE_RESTORE) {
-    if (sourceFile ?? primaryFile) {
-      get().setFeatureSourceImage(
-        WorkspaceTab.FACE_RESTORE,
-        (sourceFile ?? primaryFile)!
-      )
-    }
-    if (resultFile) get().setFeatureResultImage(WorkspaceTab.FACE_RESTORE, resultFile)
+    // 省略 SUPER_RES 与 FACE_RESTORE 的同类恢复逻辑
   } else {
     const file = primaryFile ?? sourceFile
     if (file) {
@@ -3783,27 +3669,19 @@ def api_login(self, req: UserLogin, db: Session = Depends(get_db)):
 
 图 5.11 文生图功能界面图（此处放截图）
 
-前端文生图功能核心代码如下：
+前端文生图功能核心代码节选如下：
 
 ```tsx
 const handleGenerate = useCallback(() => {
   if (isDisabled || !settings.prompt.trim()) {
     return
   }
-
   if (hasSavableWorkspaceContent() && hasUnsavedWorkspaceChanges()) {
     setShowGenerateConfirm(true)
     return
   }
-
   runTxt2Img()
-}, [
-  hasSavableWorkspaceContent,
-  hasUnsavedWorkspaceChanges,
-  isDisabled,
-  settings.prompt,
-  runTxt2Img,
-])
+}, [hasSavableWorkspaceContent, hasUnsavedWorkspaceChanges, isDisabled, settings.prompt, runTxt2Img])
 
 runTxt2Img: async () => {
   const result = await txt2img({
@@ -3813,32 +3691,29 @@ runTxt2Img: async () => {
     width: settings.txt2imgWidth,
     height: settings.txt2imgHeight,
     steps: settings.sdSteps,
-    guidanceScale: settings.sdGuidanceScale,
-    sampler: settings.sdSampler,
     sessionId: currentWorkspaceSessionId ?? undefined,
     seed: settings.seed,
-    seedFixed: settings.seedFixed,
-    enableLCMLora: settings.enableLCMLora,
+    // 省略 guidanceScale、sampler、seedFixed、LCM-LoRA 等参数
   })
-  if (result) {
-    const response = await fetch(result.blob)
-    const blob = await response.blob()
-    const file = new File([blob], "generated.png", {
-      type: blob.type || "image/png",
-    })
-
-    set((state) => {
-      state.generatedImages.unshift({
-        url: result.blob,
-        seed: result.seed ?? "0",
-        file,
-      })
-      state.selectedGeneratedImageIndex = 0
-      state.pendingGeneratedHandoff = true
-      state.workspaceDirty = true
-    })
-    get().setWorkingImage(file)
+  if (!result) {
+    return
   }
+  const response = await fetch(result.blob)
+  const blob = await response.blob()
+  const file = new File([blob], "generated.png", {
+    type: blob.type || "image/png",
+  })
+  set((state) => {
+    state.generatedImages.unshift({
+      url: result.blob,
+      seed: result.seed ?? "0",
+      file,
+    })
+    state.selectedGeneratedImageIndex = 0
+    state.pendingGeneratedHandoff = true
+    state.workspaceDirty = true
+  })
+  get().setWorkingImage(file)
 }
 ```
 
@@ -4293,7 +4168,9 @@ const handleOpen = async (id: string) => {
 </Button>
 ```
 
-后端工作区功能核心代码如下：
+后端工作区功能核心代码节选如下：
+
+保存工作区的核心代码节选如下：
 
 ```python
 def api_save_workspace(
@@ -4305,35 +4182,22 @@ def api_save_workspace(
     session = self._require_workspace_session(db, current_user, req.session_id)
     if session is None:
         session = db_crud.create_workspace_session(
-            db=db,
-            user_id=current_user.id,
+            db=db, user_id=current_user.id,
             title=self._workspace_title(req.active_tab, req.title),
-            source_feature=req.active_tab,
-            current_feature=req.active_tab,
+            source_feature=req.active_tab, current_feature=req.active_tab,
         )
     else:
         db_crud.touch_workspace_session(
-            db,
-            session,
-            title=self._workspace_title(req.active_tab, req.title),
-            current_feature=req.active_tab,
+            db, session,
+            title=self._workspace_title(req.active_tab, req.title), current_feature=req.active_tab,
         )
     asset_roles: dict[str, str] = {}
     for asset in req.assets:
         created = self._create_asset_from_upload(
-            db=db,
-            user=current_user,
-            session_id=session.id,
-            active_tab=req.active_tab,
-            role=asset.role,
-            kind=asset.kind,
-            data_url=asset.data,
-            filename=asset.filename,
-            label=asset.label,
-            width=asset.width,
-            height=asset.height,
-            mime_type=asset.mime_type,
-            metadata=asset.metadata,
+            db=db, user=current_user, session_id=session.id,
+            active_tab=req.active_tab, role=asset.role,
+            kind=asset.kind, data_url=asset.data,
+            # 省略文件名、尺寸与元数据等参数
         )
         asset_roles[asset.role] = created.id
     primary_asset_id = asset_roles.get("primary") or asset_roles.get("result") or asset_roles.get("source")
@@ -4353,8 +4217,7 @@ def api_save_workspace(
     )
     db_crud.upsert_feature_states(db, session.id, req.settings_by_feature)
     db_crud.touch_workspace_session(
-        db,
-        session,
+        db, session,
         title=self._workspace_title(req.active_tab, req.title),
         current_feature=req.active_tab,
         current_snapshot_id=snapshot.id,
@@ -4362,38 +4225,12 @@ def api_save_workspace(
         current_mask_asset_id=mask_asset_id,
         current_preview_asset_id=preview_asset_id,
     )
-    op = self._create_operation_log(
-        db=db,
-        user=current_user,
-        session_id=session.id,
-        feature=req.active_tab,
-        operation="manual_save",
-        model_name=None,
-        plugin_name=None,
-        duration_ms=None,
-        request_data={"asset_roles": list(asset_roles.keys())},
-        response_data={"snapshot_id": snapshot.id},
-    )
-    if op:
-        db_crud.touch_workspace_session(db, session, last_operation_id=op.id)
-    self._create_activity(
-        db=db,
-        user=current_user,
-        session_id=session.id,
-        event_type="manual_save",
-        feature=req.active_tab,
-        detail={"snapshot_id": snapshot.id},
-    )
-    fresh = db_crud.get_workspace_session(db, session.id, current_user.id)
-    latest_snapshot = next((item for item in fresh.snapshots if item.id == fresh.current_snapshot_id), None)
-    operations = [self._operation_to_response(item) for item in db_crud.list_operation_runs(db, fresh.id, current_user.id, 50)]
-    return WorkspaceDetailResponse(
-        session=self._session_to_summary(fresh),
-        latest_snapshot=self._snapshot_to_response(latest_snapshot),
-        feature_states=db_crud.get_feature_states_map(fresh),
-        operations=operations,
-    )
+    # 省略操作日志、活动记录与响应封装逻辑
+```
 
+导入工作区的核心代码节选如下：
+
+```python
 def api_import_workspace(
     self,
     file: UploadFile,
@@ -4412,19 +4249,10 @@ def api_import_workspace(
         current_feature="inpaint",
     )
     asset = self._create_asset_from_upload(
-        db=db,
-        user=current_user,
-        session_id=session.id,
-        active_tab="inpaint",
-        role="primary",
-        kind="uploaded",
+        db=db, user=current_user, session_id=session.id,
+        active_tab="inpaint", role="primary", kind="uploaded",
         data_url=data_url,
-        filename=file.filename,
-        label=file.filename,
-        width=None,
-        height=None,
-        mime_type=guessed_type,
-        metadata={},
+        # 省略文件名、尺寸与元数据等参数
     )
     snapshot = db_crud.create_snapshot(
         db=db,
@@ -4439,7 +4267,11 @@ def api_import_workspace(
         workspace_state={"imported": True},
     )
     return WorkspaceImportResponse(id=snapshot.id, name=file.filename or "uploaded", session_id=session.id, asset_id=asset.id, created_at=snapshot.created_at)
+```
 
+恢复工作区的核心代码节选如下：
+
+```python
 def api_resume_workspace(
     self,
     session_id: str,
@@ -4456,6 +4288,7 @@ def api_resume_workspace(
         asset = db_crud.get_asset(db, asset_id, current_user.id)
         if asset:
             assets[asset.id] = self._asset_to_response(asset)
+    # 省略恢复活动记录逻辑
     return WorkspaceResumeResponse(
         session=self._session_to_summary(session),
         snapshot=self._snapshot_to_response(snapshot),
